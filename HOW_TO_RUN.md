@@ -1,246 +1,245 @@
-# How to Run MARICHI (मरीचि)
-**Zero-Loss Visual Modem — Step-by-Step Operational Guide**
+# How to Run MARICHI (मरीचि)  v0.2
+**Zero-Loss Visual Modem — with ACK Feedback + Three-Way Checksum**
 
 ---
 
-## What Is Happening Here
+## What's New in v0.2
 
-You have two machines. No cable. No network. Just two laptops facing each other.
-
-```
-  OLD LAPTOP (Sender)                    NEW LAPTOP / PHONE (Receiver)
-  ┌─────────────────────┐                ┌─────────────────────────────┐
-  │                     │                │                             │
-  │  ██▓░▒█▓░█▒░▓▓█▒░  │◄──────────────│  📷 Camera points at screen │
-  │  ▓░▒██▒░▓█░▒░▓█▒█  │   Camera       │                             │
-  │  ░▓█▒░██▓░▒█▒░▒█▓  │   captures     │  receive.py captures,       │
-  │  ▒░░▓▒█░▓▒█░▓█░▒▓  │   the screen   │  decodes, reassembles file  │
-  │                     │                │                             │
-  │  send.py displays   │                └─────────────────────────────┘
-  │  coloured pixel     │
-  │  frames in a loop   │
-  └─────────────────────┘
-```
-
-The sender screen becomes a **visual modem**. Each full-screen frame carries ~90 KB of data encoded as coloured pixel cells. The receiver's camera reads those frames in real time and reassembles the original file, **bit for bit**.
+| Feature | v0.1 | v0.2 |
+|---------|------|------|
+| Transmission mode | Timer-based cycling | **ACK-driven auto-advance** |
+| Checksum | None | **CRC32 in header + independent checksum strip** |
+| Feedback | None | **Green / Blue / Yellow ACK window on receiver** |
+| Retry on error | Never | **Auto-retry on Yellow (NACK)** |
+| Data loss guarantee | ECC only | **ECC + CRC32 + strip + ACK confirmation** |
 
 ---
 
-## Prerequisites
+## How the ACK Protocol Works
 
-### Both Machines
-- Python 3.9 or 3.10+
-- The `marichi` repo cloned
+```
+SENDER MACHINE                              RECEIVER MACHINE
+┌──────────────────────────────┐           ┌─────────────────────────────┐
+│                              │           │                             │
+│  ┌────────────────────────┐  │           │  ┌─────────────────────┐   │
+│  │  DATA FRAME (full scr) │  │           │  │  CAMERA PREVIEW     │   │
+│  │  Frame 47 / 200        │  │ ←──────── │  │  (reading sender)   │   │
+│  │  [pixel matrix]        │  │  data cam │  └─────────────────────┘   │
+│  │  [checksum strip]      │  │           │                             │
+│  └────────────────────────┘  │           │  ┌─────────────────────┐   │
+│                              │           │  │  ACK WINDOW         │   │
+│  ┌────────────────────────┐  │           │  │                     │   │
+│  │  ACK CAMERA PREVIEW    │  │ ──────────→ │  🟢 PROCESSING      │   │
+│  │  (watching receiver    │  │  ack cam  │  🔵 BLUE = frame OK   │   │
+│  │   ACK window)          │  │           │  🟡 YELLOW = retry    │   │
+│  └────────────────────────┘  │           │  └─────────────────────┘   │
+└──────────────────────────────┘           └─────────────────────────────┘
+```
 
-### Install (run once, outside Walmart network)
+### Signal Meaning
+
+| Receiver shows | Sender sees | Sender action |
+|----------------|-------------|---------------|
+| 🟢 **GREEN** | "Processing" | Wait — receiver is decoding |
+| 🔵 **BLUE** | "ACK" | ✅ Advance to next frame |
+| 🟡 **YELLOW** | "NACK" | ❌ Re-show same frame (retry) |
+
+### Three-Way Checksum Validation
+
+For every frame, the receiver runs **three independent checks**:
+
+```
+Frame received
+    │
+    ├─ 1. ECC decode          → Reed-Solomon corrects camera noise
+    │                              (fails → YELLOW immediately)
+    │
+    ├─ 2. Header CRC32 check  → CRC32(decoded payload) == CRC32 in header
+    │                              (mismatch → YELLOW)
+    │
+    └─ 3. Strip CRC32 check   → CRC32 in checksum strip == header CRC32
+                                   (mismatch → YELLOW)
+
+All three pass → 🔵 BLUE ACK sent
+Any one fails  → 🟡 YELLOW NACK sent → sender retries
+```
+
+The checksum strip is visually encoded as **2 extra rows** at the bottom of every data frame — independent of the main ECC data. It contains the CRC32 × 8 repetitions + RS ECC. Immune to partial row corruption.
+
+---
+
+## Physical Setup
+
+### Dual-Camera Configuration (ACK Mode — Recommended)
+
+```
+        ┌───────────────────────────────────────────────────┐
+        │                    TOP VIEW                        │
+        │                                                    │
+        │    SENDER laptop              RECEIVER laptop      │
+        │   ┌──────────────┐           ┌──────────────┐    │
+        │   │              │ ◄── 30-60cm ──►           │    │
+        │   │  DATA FRAME  │           │  ACK WINDOW  │    │
+        │   │  on screen   │           │  blue/green/ │    │
+        │   │              │           │  yellow flash│    │
+        │   └──────────────┘           └──────────────┘    │
+        │     📷 webcam A                   📷 webcam B     │
+        │    (at top of lid)               (at top of lid)  │
+        │    → points at                   → points at      │
+        │      receiver screen               sender screen  │
+        │                                                    │
+        └───────────────────────────────────────────────────┘
+```
+
+Both laptop webcams (built into the screen lids) naturally point toward each other when the laptops face each other.
+
+**Physical checklist:**
+- [ ] Place laptops facing each other, 30–60 cm apart
+- [ ] Sender screen: **full brightness** (F12 or display settings)
+- [ ] Receiver's ACK window: large, positioned so sender's webcam sees it clearly
+- [ ] Tilt lids slightly toward each other to maximise camera angle
+- [ ] Diffuse room lighting (avoid glare/reflections on sender screen)
+- [ ] Both cameras in focus (tap to lock autofocus if on phone)
+
+### Single-Camera Setup (Timer Mode — No ACK)
+
+If you only have one camera (receiver reads sender, no ACK feedback):
+- Use timer mode: sender cycles through all frames on a fixed interval
+- Receiver captures until all frames seen
+- No auto-advance, no retry — the sender loops until you stop it
+
+---
+
+## Step-by-Step Run Guide
+
+### STEP 1 — Install (new machine)
 ```bash
 git clone https://gecgithub01.walmart.com/n0j02yt/marichi.git
 cd marichi
 pip install -r requirements.txt
 ```
 
-**Packages installed:**
-| Package | Purpose |
-|---------|---------|
-| `opencv-python` | Screen display + camera capture + image processing |
-| `numpy` | Fast pixel array operations |
-| `reedsolo` | Reed-Solomon error correction (corrects camera noise) |
-| `tqdm` | Progress bars |
-| `Pillow` | Image utilities |
-
 ---
 
-## Part 1 — SENDER SETUP (Old Laptop)
+### STEP 2 — Start Receiver FIRST
 
-### Step 1.1 — Prepare your file
-
-Any file works: `.zip`, `.tar.gz`, a single binary, anything.
+On the **receiver** machine, open a terminal and run:
 
 ```bash
-# Optional: zip multiple files into one bundle first
-zip -r mydata.zip /path/to/folder/
-```
-
-### Step 1.2 — Run the sender
-
-```bash
-cd /path/to/marichi
-
-python send.py /path/to/mydata.zip
-```
-
-**What happens:**
-1. File is read and its SHA-256 is printed — **write this down** for validation later
-2. All frames are pre-built in memory (this takes 1–3 minutes for large files)
-3. A fullscreen black window opens on your screen
-4. Coloured pixel frames begin cycling on the screen in a loop
-
-**Example output:**
-```
-[MARICHI SENDER]
-  file       : mydata.zip
-  size       : 1,048,576 bytes (1.00 MB)
-  SHA-256    : a3f2c19d...e8b7
-  session    : 4f9a2b1c3d0e5f6a
-  frames     : 12
-  payload/fr : 92,288 B
-
-[BUILDING 12 FRAMES ...]
-100%|████████████████| 12/12 [00:04<00:00]
-[BUILD COMPLETE]
-
-[SENDER] Opening fullscreen display window.
-         Press  Q  to quit.
-         Cycling through 12 frames at ~12 fps.
-
-[CYCLE    1]  elapsed=2s  effective=1.04 MB/s
-[CYCLE    2]  elapsed=4s  effective=1.07 MB/s
-```
-
-The sender **keeps looping** until you press `Q`. It will loop thousands of times if needed — the receiver just needs to capture each unique frame once.
-
-### Step 1.3 — Speed settings
-
-| Use case | Command | Speed |
-|----------|---------|-------|
-| Default (balanced) | `python send.py file.zip` | ~1.1 MB/s |
-| Fast (needs good camera) | `python send.py file.zip --block 1` | ~4.4 MB/s |
-| Robustness (noisy camera) | `python send.py file.zip --block 4` | ~280 KB/s |
-| Faster frame rate | `python send.py file.zip --hold 50` | ~1.8 MB/s |
-
-> `--block` = pixels per coloured cell. Smaller = more data per frame but harder for camera to read.
-> `--hold` = milliseconds per frame. Lower = faster cycling.
-
----
-
-## Part 2 — PHYSICAL SETUP
-
-This is the most important part. Get this right and everything else follows.
-
-### Camera Distance and Angle
-
-```
-                    ←—— 30–60 cm ——→
-
-  ┌──────────────┐                 ┌─────────┐
-  │  SENDER      │                 │ RECEIVER│
-  │  SCREEN      │                 │         │
-  │              │                 │  📷     │
-  │  (full       │◄────────────────│  Camera │
-  │   brightness)│  Camera sees    │         │
-  │              │  entire screen  │         │
-  └──────────────┘                 └─────────┘
-          ↑
-   Screen tilted slightly
-   toward camera if needed
-```
-
-**Checklist:**
-- [ ] Sender screen at **full brightness** (F12 / max brightness)
-- [ ] Camera fills its view with the sender screen (screen should be ~80% of camera frame)
-- [ ] Camera aimed **straight on** — angle < 30° tilt (perspective correction handles minor tilt)
-- [ ] **No strong light source behind the camera** (avoid window glare on sender screen)
-- [ ] Room lighting: **even, diffuse** — avoid spotlights on the screen
-- [ ] Camera should **not** be autofocusing in and out — tap to focus and lock if on phone
-
-### If Using a Phone as Receiver
-- Use the **rear camera** (higher resolution than front)
-- Hold phone in **landscape mode**
-- Use a stand or prop the phone so it is stable
-- Ensure camera autofocus has locked before starting `receive.py`
-
----
-
-## Part 3 — RECEIVER SETUP (New Laptop / Phone)
-
-### Step 3.1 — Run the receiver
-
-Open a terminal on the **target machine** (the one with the camera pointed at the sender screen):
-
-```bash
-cd /path/to/marichi
-
+# Default: camera 0, block size 2, shows ACK window
 python receive.py received_output.zip
+
+# Specify camera and block size
+python receive.py received_output.zip --cam 0 --block 2
+
+# Timer mode (no ACK window, headless)
+python receive.py received_output.zip --no-ack
 ```
 
-**What happens:**
-1. Camera opens
-2. A small live preview window appears showing what the camera sees
-3. The receiver scans every camera frame looking for MARICHI pixel patterns
-4. When it detects the first valid frame, it prints the session ID and total frame count
-5. Progress bar shows frames being received
-6. When all frames are captured, file is assembled and SHA-256 is printed
+The receiver opens:
+- A small **camera preview window** (what the camera sees)
+- A large **ACK window** (green/blue/yellow — starts dark gray "WAITING")
 
-**Example output:**
-```
-[MARICHI RECEIVER]
-  output   : received_output.zip
-  camera   : device 0
-  timeout  : 7200s
+> ⚠️ **Always start the receiver before the sender.** The receiver needs to be ready to display ACK before the sender starts watching.
 
-[RECEIVER] Camera open. Scanning for MARICHI frames ...
-           Aim camera at sender screen.
-           Press  Q  to abort.
+---
 
-[SESSION]  id=4f9a2b1c3d0e5f6a  total_frames=12
-Receiving:  42%|████████████▌         | 5/12 [00:08<00:09]
+### STEP 3 — Start Sender
 
-[RECEIVER] All 12 frames received!
-
-[ASSEMBLING]  12 frames ...
-[ASSEMBLED]  1,048,576 bytes → received_output.zip
-             SHA-256: a3f2c19d...e8b7
-             Frames received: 12/12
-             ✅ All frames received — run validator for final confirmation
-
-✅ File saved: received_output.zip
-   Run:  python validate.py <original> received_output.zip
-```
-
-### Step 3.2 — If using a different camera device
+On the **sender** machine:
 
 ```bash
-# List available cameras (0, 1, 2, ...)
-python -c "import cv2; [print(f'Camera {i}: OK' if cv2.VideoCapture(i).isOpened() else f'Camera {i}: not found') for i in range(5)]"
+# ACK mode (recommended — sender watches receiver's ACK window)
+python send.py /path/to/myfile.zip --ack-cam 0
 
-# Use camera 1
-python receive.py output.zip --cam 1
+# Specify camera index for ACK detection
+python send.py /path/to/myfile.zip --ack-cam 1
+
+# Timer mode fallback (no ACK camera)
+python send.py /path/to/myfile.zip
 ```
 
-### Step 3.3 — block size must match sender
+**What you'll see on sender:**
+```
+[MARICHI SENDER  v0.2]
+  file        : myfile.zip
+  size        : 524,288,000 B  (500.00 MB)
+  SHA-256     : 3d4f...a9b2
+  session     : 7c3a1f9b0e2d4a6c
+  frames      : 5690
+  ACK mode    : camera 1
 
-> ⚠️ **Critical:** The `--block` value on the receiver MUST match the sender.
+[BUILDING 5690 FRAMES — includes CRC32 + checksum strip]
+100%|████████████████| 5690/5690 [02:14<00:00]
 
-```bash
-# Sender ran with --block 1 ?  → Receiver must also use --block 1
-python send.py file.zip --block 1
-python receive.py out.zip --block 1   # same block size!
+[SENDER] Opening fullscreen window.
+         ACK camera 1 monitoring receiver screen.
+         Will auto-advance on BLUE ACK, re-show on YELLOW NACK.
+  ✅ Frame    1/5690 ACK'd  (retries=0)
+  ✅ Frame    2/5690 ACK'd  (retries=0)
+  ❌ Frame    3/5690 NACK  (retry #1)       ← YELLOW from receiver
+  ✅ Frame    3/5690 ACK'd  (retries=1)     ← re-shown, now OK
+  ✅ Frame    4/5690 ACK'd  (retries=0)
+  ...
 ```
 
 ---
 
-## Part 4 — VALIDATOR (Zero-Loss Verification)
+### STEP 4 — Watch Progress
 
-Run this on **either machine** after the transfer completes.
+**Receiver ACK window colours:**
 
-```bash
-python validate.py /path/to/original/mydata.zip received_output.zip
+| Colour | Meaning | Duration |
+|--------|---------|---------|
+| 🔘 Dark gray | Waiting for first frame | Until first decode |
+| 🟢 **Solid green** | Decoding in progress | Continuous while scanning |
+| 🔵 **Solid blue** | Frame verified — ACK sent | 1.5 seconds (configurable) |
+| 🟡 **Solid yellow** | Checksum failed — NACK | 1.5 seconds |
+
+**Progress bar on receiver:**
+```
+Receiving:  47%|█████████████▌               | 2675/5690 [08:32<09:45]
 ```
 
-**Perfect transfer output:**
+---
+
+### STEP 5 — Completion
+
+**Receiver** prints:
+```
+[RECEIVER] All 5690 frames received!
+[ASSEMBLING]  5690/5690 frames ...
+[ASSEMBLED]  524,288,000 B → received_output.zip
+             SHA-256     : 3d4f...a9b2
+             Frames recv : 5690/5690
+             Cksum fails : 0
+             Status      : ✅ COMPLETE
+
+✅  Received: received_output.zip
+    Validate: python validate.py <original> received_output.zip
+```
+
+**Sender** screen turns solid **GREEN** "TRANSFER COMPLETE" for 3 seconds, then closes.
+
+---
+
+### STEP 6 — Validate
+
+```bash
+python validate.py /path/to/original/myfile.zip received_output.zip
+```
+
+**Perfect output:**
 ```
 ════════════════════════════════════════════════════════════
   MARICHI VALIDATION REPORT
 ════════════════════════════════════════════════════════════
-  Original           : /path/to/mydata.zip
-  Received           : received_output.zip
-
-  Original size      : 1,048,576 bytes
-  Received size      : 1,048,576 bytes
+  Original size      : 524,288,000 bytes
+  Received size      : 524,288,000 bytes
   Size check         : ✅ MATCH
 
-  Original SHA-256   : a3f2c19d...e8b7
-  Received SHA-256   : a3f2c19d...e8b7
+  Original SHA-256   : 3d4f...a9b2
+  Received SHA-256   : 3d4f...a9b2
   Hash check         : ✅ MATCH
 
   Differences        : NONE ✅
@@ -249,136 +248,143 @@ python validate.py /path/to/original/mydata.zip received_output.zip
 ════════════════════════════════════════════════════════════
 ```
 
-Exit code `0` = PERFECT. Use in scripts:
-```bash
-python validate.py original.zip received.zip && echo "Transfer verified" || echo "DATA LOSS DETECTED"
-```
-
-**If transfer was incomplete:**
-```
-  VERDICT            : 🔴  SIZE_MISMATCH
-```
-→ Some frames were missed. Re-run receive.py (sender is still looping).
-
-**If transfer has errors:**
-```
-  First diff offset  : byte 1,048,234  (0x000FFEDA)
-  Byte differences   : 42
-  Bit  differences   : 163
-  Corruption %       : 0.000040%
-  VERDICT            : 🟡  DEGRADED
-```
-→ ECC corrected most errors but a few slipped through. Decrease `--block` size or improve lighting and retry.
+Exit code `0` = zero data loss confirmed.
 
 ---
 
-## Part 5 — FULL WALKTHROUGH EXAMPLE
+## CLI Reference — v0.2
 
-### Transferring a 500 MB file
+### `send.py`
+```
+python send.py <file> [options]
 
-**On old laptop (sender):**
-```bash
-cd ~/IdeaProjects/marichi
-python send.py ~/backup.tar.gz --block 2 --hold 80
-# → Prints SHA-256: abc123...
-# → Opens fullscreen display, starts cycling frames
+  --block / -b  INT   Pixels per cell (1=fast, 4=robust). Default: 2
+  --hold  / -t  INT   Frame hold ms in timer mode.       Default: 80
+  --ack-cam/-a  INT   Camera index for ACK detection.    Default: -1 (disabled)
+
+Examples:
+  python send.py data.zip                        # timer mode, no ACK
+  python send.py data.zip --ack-cam 0            # ACK via camera 0
+  python send.py data.zip --block 1 --ack-cam 1  # high-speed + ACK cam 1
+  python send.py data.zip --block 4              # robust timer mode
 ```
 
-**On new laptop (receiver) — camera pointed at old screen:**
-```bash
-cd ~/marichi
-python receive.py ~/received_backup.tar.gz --cam 0 --block 2
-# → Waits, detects session, starts capturing...
-# → Shows progress: 3341/3341 frames (100%)
-# → Assembles file, prints SHA-256: abc123...
+### `receive.py`
+```
+python receive.py <output> [options]
+
+  --cam    / -c  INT   Camera device index.              Default: 0
+  --block  / -b  INT   Must match sender's --block.      Default: 2
+  --timeout/ -t  INT   Max wait seconds.                 Default: 7200
+  --ack-ms        INT   ACK flash duration ms.           Default: 1500
+  --no-ack             Disable ACK window (headless).
+
+Examples:
+  python receive.py out.zip                      # standard
+  python receive.py out.zip --cam 1 --block 2    # different camera
+  python receive.py out.zip --ack-ms 2000        # slower ACK for older cameras
+  python receive.py out.zip --no-ack             # headless / terminal only
 ```
 
-**Validate on either machine:**
-```bash
-python validate.py ~/backup.tar.gz ~/received_backup.tar.gz
-# → VERDICT: 🟢 PERFECT
+### `validate.py`
+```
+python validate.py <original> <received>
+
+  Exit 0 = PERFECT (bit-identical)
+  Exit 1 = any difference
 ```
 
 ---
 
-## Part 6 — TIMING ESTIMATES
+## Troubleshooting
 
-| File Size | block=2 (default) | block=1 (fast) |
-|-----------|-------------------|----------------|
-| 100 MB | ~2 min | ~40 sec |
-| 1 GB | ~16 min | ~6.5 min |
-| 10 GB | ~2.7 hrs | ~65 min |
-| 25 GB | ~6.5 hrs | ~2.7 hrs |
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| Sender stuck on same frame | ACK cam not seeing BLUE | Position ACK window closer to sender cam |
+| All frames show YELLOW | Camera too far / block too small | Use `--block 4`, improve lighting |
+| Receiver sees no frames | Camera not on sender screen | Move closer; try `--cam 1` |
+| NACK loop (never ACKs) | Lighting / angle issue | Adjust sender screen brightness or camera angle |
+| ACK cam false positives | Room has blue/yellow lights | Dim ambient lights; close blinds |
+| `Cannot open camera` | Wrong index | Run camera list check below |
+| Sender times out (30s) | ACK too slow | Reduce `--ack-ms` on receiver |
 
-> These are **theoretical** at 12 fps. Practical speed depends on camera quality and lighting.
-> The sender loops continuously — receiver just needs to capture each frame once.
-> You don't need to watch it. Start both, let them run, come back when done.
-
----
-
-## Part 7 — TROUBLESHOOTING
-
-| Problem | Likely Cause | Fix |
-|---------|-------------|-----|
-| Receiver sees no frames | Camera not seeing screen / wrong device | Move camera closer; try `--cam 1` |
-| Many decode failures | Block size too small for camera | Use `--block 4` for robustness |
-| Progress stalls at N frames | Some frames hard to read | Wait — sender loops forever, receiver will eventually get them |
-| SIZE_MISMATCH after receive | Session interrupted early | Re-run `receive.py` — it will start a new session |
-| DEGRADED verdict | A few uncorrected errors | Re-transfer just the corrupted blocks (feature: Phase 2) |
-| Screen glare | Overhead light reflecting | Draw blinds / move to darker room |
-| Out of memory on large files | 25 GB file fully loaded in RAM | Split with `split -b 4G bigfile.tar.gz chunk_` and send in parts |
+**List cameras:**
+```bash
+python -c "import cv2; [print(f'cam {i}:', 'OK' if cv2.VideoCapture(i).isOpened() else 'not found') for i in range(5)]"
+```
 
 ---
 
-## Part 8 — SPLITTING LARGE FILES (for 25 GB)
-
-Sending 25 GB in one go requires ~25 GB of RAM to pre-build all frames. Split into chunks:
+## Splitting 25 GB Files
 
 ```bash
-# On sender — split 25 GB into 4 GB chunks
+# Split on sender
 split -b 4G bigfile.tar.gz chunk_
 
-# Send each chunk one by one
-python send.py chunk_aa
-python send.py chunk_ab
+# Send each
+python send.py chunk_aa --ack-cam 0
+python send.py chunk_ab --ack-cam 0
 # ...
 
-# On receiver — receive each chunk
-python receive.py chunk_aa_recv
-python receive.py chunk_ab_recv
+# Receive each
+python receive.py chunk_aa_recv --cam 0
+python receive.py chunk_ab_recv --cam 0
 # ...
 
-# Reassemble on receiver
-cat chunk_aa_recv chunk_ab_recv chunk_ac_recv ... > bigfile_received.tar.gz
+# Reassemble
+cat chunk_aa_recv chunk_ab_recv ... > bigfile_received.tar.gz
 
-# Validate the whole thing
+# Final validation
 python validate.py bigfile.tar.gz bigfile_received.tar.gz
 ```
+
+---
+
+## Performance Estimates
+
+| Block | ACK Mode | Effective | 25 GB |
+|-------|----------|-----------|-------|
+| `--block 1` | ACK | ~3–5 MB/s | 1.5–2.5 hrs |
+| `--block 2` *(default)* | ACK | ~1–2 MB/s | 3.5–7 hrs |
+| `--block 2` | Timer | ~1.9 MB/s | ~3.7 hrs |
+| `--block 4` | ACK | ~400 KB/s | ~18 hrs |
+
+> ACK mode is slightly slower than timer mode because it waits for each frame to be confirmed before advancing. But it guarantees **zero data loss** — every byte is confirmed before the sender moves on.
 
 ---
 
 ## Quick Reference Card
 
 ```
-SENDER   →   python send.py    <file>          [--block 1|2|4]  [--hold 50|80|120]
-RECEIVER →   python receive.py <output>        [--cam 0|1]      [--block SAME_AS_SENDER]
-VALIDATE →   python validate.py <orig> <recv>
+ALWAYS START RECEIVER FIRST, THEN SENDER.
 
-Block size guide:
-  --block 1  →  fastest, needs 1080p camera, good lighting
-  --block 2  →  default, balanced, works with most laptop cameras
-  --block 4  →  slowest, most robust, for challenging conditions
+RECEIVER:  python receive.py <output>  --cam 0 --block 2
+SENDER:    python send.py    <file>    --ack-cam 0 --block 2
+VALIDATE:  python validate.py <original> <received>
+
+Block rule: --block on receiver MUST equal --block on sender.
+
+ACK signals:
+  🟢 GREEN  = processing (wait)
+  🔵 BLUE   = ACK — sender advances
+  🟡 YELLOW = NACK — sender retries same frame
+
+Checksum: 3-way verification per frame
+  1. Reed-Solomon ECC decode
+  2. CRC32(payload) == header CRC32
+  3. CRC32(payload) == checksum strip CRC32
+All three must pass for BLUE. Any failure = YELLOW.
 
 Verdict codes:
-  🟢 PERFECT        → exit 0, zero data loss, transfer complete
-  🟡 DEGRADED       → exit 1, < 5% bytes wrong, re-transfer recommended
-  🔴 SIZE_MISMATCH  → exit 1, frames missed, re-run receiver
-  🔴 CORRUPT        → exit 1, > 5% bytes wrong, re-transfer
+  🟢 PERFECT       → exit 0, zero data loss
+  🟡 DEGRADED      → exit 1, < 5% bytes wrong
+  🔴 SIZE_MISMATCH → exit 1, frames missed
+  🔴 CORRUPT       → exit 1, > 5% bytes wrong
 ```
 
 ---
 
-*MARICHI (मरीचि) v0.1 — "ray of light; a mirage"*
+*MARICHI (मरीचि) v0.2 — "ray of light; a mirage"*
 *🌀 Magic applied with Sandeep Josyula's VASS !! 🪄*
 
 ---
