@@ -593,16 +593,62 @@ class MarichiHandler(BaseHTTPRequestHandler):
 # ══════════════════════════════════════════════════════════════════════════════
 #  ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════════
+def _cert_has_ip(cert_path: Path, ip: str) -> bool:
+    """Return True if the cert's SAN already covers this IP address."""
+    try:
+        r = subprocess.run(['openssl', 'x509', '-in', str(cert_path), '-text', '-noout'],
+                          capture_output=True, text=True, timeout=5)
+        return f'IP Address:{ip}' in r.stdout
+    except Exception:
+        return False
+
+
 def _make_ssl_context() -> ssl.SSLContext:
-    """Generate self-signed cert with openssl CLI and wrap server socket."""
+    """
+    Build an SSL context for the local network.
+
+    Priority:
+      1. mkcert  — if installed, produces a CA-signed cert that browsers trust
+                   without any warning. One-time: run `mkcert -install` on laptop,
+                   then install the CA on Android via Settings → Security → Install cert.
+      2. openssl — self-signed cert with proper SAN (IP + localhost).
+                   Browser will warn once; tap Advanced → Proceed to continue.
+                   Without SAN Chrome rejects the cert entirely (ERR_CERT_COMMON_NAME_INVALID).
+
+    The cert is regenerated whenever the local IP changes.
+    """
     d    = Path('/tmp/marichi_ssl'); d.mkdir(exist_ok=True)
-    cert = d / 'cert.pem'; key = d / 'key.pem'
-    if not cert.exists():
-        subprocess.run([
-            'openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
-            '-out', str(cert), '-keyout', str(key),
-            '-days', '365', '-subj', '/CN=marichi-local'
-        ], capture_output=True, check=True)
+    cert = d / 'cert.pem'
+    key  = d / 'key.pem'
+    ip   = _my_ip()
+
+    # Regenerate if cert is missing or doesn't cover the current IP
+    if not cert.exists() or not _cert_has_ip(cert, ip):
+        cert.unlink(missing_ok=True)
+        key.unlink(missing_ok=True)
+
+        # ── Option 1: mkcert (trusted — no browser warning) ───────────────────
+        try:
+            subprocess.run(
+                ['mkcert', '-cert-file', str(cert), '-key-file', str(key),
+                 'localhost', '127.0.0.1', ip],
+                capture_output=True, check=True, timeout=15
+            )
+            print(f'🔐 mkcert cert generated — trusted by browsers (no warning)')
+            print(f'   To trust on Android: Settings → Security → Install certificate')
+            print(f'   CA location: {subprocess.run(["mkcert", "-CAROOT"], capture_output=True, text=True).stdout.strip()}')
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            # ── Option 2: openssl self-signed WITH SAN ─────────────────────────
+            san = f'subjectAltName=IP:{ip},IP:127.0.0.1,DNS:localhost'
+            subprocess.run([
+                'openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+                '-out', str(cert), '-keyout', str(key),
+                '-days', '365', '-subj', '/CN=marichi-local',
+                '-addext', san
+            ], capture_output=True, check=True, timeout=15)
+            print(f'🔒 Self-signed cert (SAN = {ip}, 127.0.0.1, localhost)')
+            print(f'   Phone: tap Advanced → Proceed to accept the warning once')
+
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(str(cert), str(key))
     return ctx
@@ -610,42 +656,52 @@ def _make_ssl_context() -> ssl.SSLContext:
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description='MARICHI Web UI')
-    ap.add_argument('--port',  type=int, default=5000)
-    ap.add_argument('--https', action='store_true',
-                    help='Enable HTTPS (self-signed cert via openssl)')
+    ap.add_argument('--port',     type=int, default=5001,
+                    help='Port to listen on (default 5001)')
+    ap.add_argument('--no-https', action='store_true',
+                    help='Disable HTTPS and use plain HTTP (phone camera will not work)')
     args = ap.parse_args()
 
     _PORT      = args.port
-    _USE_HTTPS = args.https
+    _USE_HTTPS = not args.no_https   # HTTPS is now the DEFAULT
 
     _ensure_pwa_icons()                                        # FIX #7: generate PNG icons
     threading.Thread(target=_cleanup_qr_sessions,             # FIX #8: memory cleanup
                      daemon=True).start()
 
     ip     = _my_ip()
-    scheme = 'https' if args.https else 'http'
+    scheme = 'https' if _USE_HTTPS else 'http'
 
     server = ThreadingHTTPServer(('0.0.0.0', args.port), MarichiHandler)
 
-    if args.https:
+    if _USE_HTTPS:
         try:
             server.socket = _make_ssl_context().wrap_socket(
                 server.socket, server_side=True)
-            print(f'🔒 HTTPS enabled (self-signed cert)')
         except Exception as e:
             print(f'⚠️  HTTPS failed ({e}) — falling back to HTTP')
+            _USE_HTTPS = False
+            scheme     = 'http'
 
-    print(f'\n🌀 MARICHI Web UI  v1.1')
-    print('─' * 44)
+    print(f'\n🌀 MARICHI Web UI  v1.2')
+    print('─' * 50)
     print(f'  Laptop  : {scheme}://localhost:{args.port}')
     print(f'  Android : {scheme}://{ip}:{args.port}')
     print(f'  Scanner : {scheme}://{ip}:{args.port}/scanner')
-    if not args.https:
+    if _USE_HTTPS:
         print()
-        print(f'  ⚠️  Phone camera needs HTTPS.')
-        print(f'     Run:  python app.py --https')
-        print(f'     Then tap "Advanced → Proceed" on cert warning.')
-    print('─' * 44)
+        print(f'  📱 Phone setup (one-time):')
+        print(f'     1. Open Chrome → {scheme}://{ip}:{args.port}')
+        print(f'     2. Tap Advanced → Proceed to {ip} (unsafe)')
+        print(f'     3. Camera access will work after that')
+        print(f'  💡 To avoid the warning: install mkcert on laptop')
+        print(f'     brew install mkcert && mkcert -install')
+        print(f'     Then restart this server')
+    else:
+        print()
+        print(f'  ⚠️  Running HTTP-only — phone camera will NOT work.')
+        print(f'     Remove --no-https flag to enable HTTPS.')
+    print('─' * 50)
     print(f'  Ctrl+C to stop\n')
 
     try:
