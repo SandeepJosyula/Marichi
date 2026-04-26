@@ -1,5 +1,23 @@
-opencv-python>=4.8.0
+# MARICHI (मरीचि) — dependencies for all transport modes
+# Install outside Walmart network (pypi.org blocked on corporate WiFi)
+
+# ── Core (required for all modes) ──────────────────────────────────────────
 numpy>=1.24.0
 reedsolo>=1.7.0
 tqdm>=4.65.0
-Pillow>=10.0.0
+
+# ── Option A — Visual mode (screen + camera) ────────────────────────────────
+opencv-python>=4.8.0
+
+# ── Option C — Audio mode (speaker + microphone) ────────────────────────────
+sounddevice>=0.4.6       # cross-platform audio I/O (speaker + mic)
+# Note: sounddevice requires PortAudio system library
+#   macOS : brew install portaudio   (or: pip install sounddevice usually works)
+#   Linux : sudo apt install libportaudio2
+#   Windows: no extra step required
+
+# ── Option D — QR stream mode (screen + any camera) ─────────────────────────
+qrcode[pil]>=7.4.2       # QR code generation  (sender)
+Pillow>=10.0.0           # image handling (required by qrcode[pil])
+# Note: OpenCV's built-in QRCodeDetector is used for decoding (already in opencv-python above)
+#       No pyzbar needed.

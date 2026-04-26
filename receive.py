@@ -1,28 +1,32 @@
 #!/usr/bin/env python3
 """
-MARICHI Receiver  v0.2  — with ACK signal display
+MARICHI Receiver  v0.3  — multi-transport
+
+Receive modes (must match sender's --mode):
+  --mode visual  (A) — pixel frame capture via camera         [default]
+  --mode audio   (C) — MFSK acoustic modem via microphone
+  --mode qr      (D) — QR-code stream via camera (phone-compatible)
 
 Usage:
-    python receive.py output.bin                     # default (cam 0, shows ACK window)
-    python receive.py output.bin --cam 1             # use camera 1
-    python receive.py output.bin --block 2           # must match sender's --block
-    python receive.py output.bin --no-ack            # headless, no ACK window
-    python receive.py output.bin --timeout 14400     # 4-hour timeout
+    python receive.py <output>                         # visual (cam 0, ACK on)
+    python receive.py <output> --cam 1                 # different camera
+    python receive.py <output> --mode audio            # acoustic modem
+    python receive.py <output> --mode audio --baud 600 # must match sender baud
+    python receive.py <output> --mode qr               # QR stream receiver
+    python receive.py <output> --mode qr  --no-ack     # QR headless
+    python receive.py <output> --no-ack                # any mode, headless
 
-ACK window behaviour:
-  🟢 GREEN   = currently processing / decoding
-  🔵 BLUE    = frame OK — three-way checksum passed (sender advances)
-  🟡 YELLOW  = decode failed or checksum mismatch  (sender retries same frame)
-
-IMPORTANT: The ACK window must be visible to the SENDER's webcam.
-Position the receiver screen so the sender camera sees the ACK colors.
+ACK window (all modes):
+  🟢 GREEN   = currently decoding / processing
+  🔵 BLUE    = frame verified — ACK sent (sender advances)
+  🟡 YELLOW  = decode failed or checksum mismatch (sender retries)
 """
 
 import argparse
 import sys
 
 
-def _apply_config(args):
+def _apply_visual_config(args):
     import marichi.config as cfg
     cfg.BLOCK_SIZE = args.block
     cfg.CELLS_X    = cfg.SCREEN_W // args.block
@@ -39,39 +43,83 @@ def _apply_config(args):
     cfg.BYTES_RAW_PER_FRAME = (cfg.DATA_CELLS * cfg.BITS_PER_CELL) // 8
     cfg.N_ECC_CHUNKS      = cfg.BYTES_RAW_PER_FRAME // cfg.CHUNK_ENC
     cfg.PAYLOAD_PER_FRAME = cfg.N_ECC_CHUNKS * cfg.CHUNK_RAW
-    cfg.CAM_INDEX  = args.cam
+    cfg.CAM_INDEX     = args.cam
     cfg.ACK_SIGNAL_MS = args.ack_ms
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="MARICHI (मरीचि) — Visual Modem Receiver  v0.2",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__
-    )
-    parser.add_argument("output",                 help="Output file path")
-    parser.add_argument("--cam",    "-c", type=int, default=0,
-                        help="Camera device index. Default: 0")
-    parser.add_argument("--block",  "-b", type=int, default=2,
-                        help="Block size — must match sender. Default: 2")
-    parser.add_argument("--timeout","-t", type=int, default=7200,
-                        help="Max wait seconds. Default: 7200")
-    parser.add_argument("--no-ack",       action="store_true", default=False,
-                        dest="no_ack",
-                        help="Disable ACK window (headless mode)")
-    parser.add_argument("--ack-ms",       type=int, default=1500,
-                        dest="ack_ms",
-                        help="How long to hold ACK flash in ms. Default: 1500")
-    args = parser.parse_args()
-
-    _apply_config(args)
-
+def _run_visual(args):
+    _apply_visual_config(args)
     from marichi.receiver import Receiver
     r = Receiver(args.output,
                  cam_index=args.cam,
                  timeout_s=args.timeout,
                  show_ack=not args.no_ack)
-    result = r.run()
+    return r.run()
+
+
+def _run_audio(args):
+    from marichi.transport.audio_modem import AudioReceiver, BAUD_RATE
+    baud = args.baud if args.baud > 0 else BAUD_RATE
+    r = AudioReceiver(args.output,
+                      baud=baud,
+                      timeout_s=args.timeout)
+    return r.run()
+
+
+def _run_qr(args):
+    from marichi.transport.qr_stream import QRReceiver
+    r = QRReceiver(args.output,
+                   cam_index=args.cam,
+                   timeout_s=args.timeout,
+                   show_ack=not args.no_ack)
+    return r.run()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="MARICHI (मरीचि) — Multi-Transport Receiver  v0.3",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument("output", help="Output file path")
+
+    # Mode selection
+    parser.add_argument("--mode", "-m",
+                        choices=["visual", "audio", "qr",
+                                 "a", "c", "d"],   # single-letter aliases
+                        default="visual",
+                        help="Transport mode: visual(A) audio(C) qr(D). Default: visual")
+
+    # Visual / QR shared camera options
+    parser.add_argument("--cam",     "-c", type=int, default=0,
+                        help="[visual/qr] Camera device index. Default: 0")
+    parser.add_argument("--block",   "-b", type=int, default=2,
+                        help="[visual] Block size — must match sender. Default: 2")
+    parser.add_argument("--timeout", "-t", type=int, default=7200,
+                        help="Max wait seconds. Default: 7200")
+    parser.add_argument("--no-ack",        action="store_true", default=False,
+                        dest="no_ack",
+                        help="Disable ACK window (headless mode)")
+    parser.add_argument("--ack-ms",        type=int, default=1500,
+                        dest="ack_ms",
+                        help="[visual/qr] ACK flash duration ms. Default: 1500")
+
+    # Audio mode options
+    parser.add_argument("--baud",    type=int, default=0,
+                        help="[audio] Baud rate: 300, 600, 1200. Must match sender. Default: 300")
+
+    args = parser.parse_args()
+
+    # Normalise single-letter aliases
+    alias = {"a": "visual", "c": "audio", "d": "qr"}
+    args.mode = alias.get(args.mode, args.mode)
+
+    dispatch = {
+        "visual": _run_visual,
+        "audio":  _run_audio,
+        "qr":     _run_qr,
+    }
+    result = dispatch[args.mode](args)
 
     if result:
         print(f"\n✅  Received: {result}")

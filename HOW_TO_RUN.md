@@ -1,76 +1,41 @@
-# How to Run MARICHI (मरीचि)  v0.2
-**Zero-Loss Visual Modem — with ACK Feedback + Three-Way Checksum**
+# How to Run MARICHI (मरीचि)  v0.3
+**Zero-Loss Multi-Transport Modem — Visual · Audio · QR · All**
 
 ---
 
-## What's New in v0.2
+## Choose Your Transport Mode
 
-| Feature | v0.1 | v0.2 |
+| Mode | Flag | Hardware needed | Throughput | Best for |
+|------|------|-----------------|------------|---------|
+| **A — Visual** *(default)* | `--mode visual` | Two cameras facing each other | **1–3 MB/s** | Laptop ↔ Laptop |
+| **C — Audio** | `--mode audio` | Speaker + Microphone | ~50–200 B/s | No cameras; small files |
+| **D — QR Stream** | `--mode qr` | Any camera incl. phone | **6–22 KB/s** | Phone/tablet as receiver |
+| **All** | `--mode all` | Everything above | All channels | Max reliability |
+
+> **File size guidance:**
+> - 25 GB → use **visual** (`--mode visual --block 2`, 3–7 hrs)
+> - 100 MB → use **qr** (`--mode qr --fps 5`, ~2.5 hrs) or visual
+> - < 1 MB → any mode; **audio** works for credential/key transfer
+
+---
+
+## What's New in v0.3
+
+| Feature | v0.2 | v0.3 |
 |---------|------|------|
-| Transmission mode | Timer-based cycling | **ACK-driven auto-advance** |
-| Checksum | None | **CRC32 in header + independent checksum strip** |
-| Feedback | None | **Green / Blue / Yellow ACK window on receiver** |
-| Retry on error | Never | **Auto-retry on Yellow (NACK)** |
-| Data loss guarantee | ECC only | **ECC + CRC32 + strip + ACK confirmation** |
+| Transmission modes | Visual only | **Visual + Audio + QR + All** |
+| Phone receiver | Not supported | **✅ QR mode (Option D)** |
+| Audio transmission | Not supported | **✅ MFSK-4 modem (Option C)** |
+| Simultaneous channels | N/A | **✅ `--mode all`** |
+| Letter aliases | N/A | **`-m a/c/d`** |
 
 ---
 
-## How the ACK Protocol Works
+## Mode A — Visual (Full-Screen Pixel Frame)
 
-```
-SENDER MACHINE                              RECEIVER MACHINE
-┌──────────────────────────────┐           ┌─────────────────────────────┐
-│                              │           │                             │
-│  ┌────────────────────────┐  │           │  ┌─────────────────────┐   │
-│  │  DATA FRAME (full scr) │  │           │  │  CAMERA PREVIEW     │   │
-│  │  Frame 47 / 200        │  │ ←──────── │  │  (reading sender)   │   │
-│  │  [pixel matrix]        │  │  data cam │  └─────────────────────┘   │
-│  │  [checksum strip]      │  │           │                             │
-│  └────────────────────────┘  │           │  ┌─────────────────────┐   │
-│                              │           │  │  ACK WINDOW         │   │
-│  ┌────────────────────────┐  │           │  │                     │   │
-│  │  ACK CAMERA PREVIEW    │  │ ──────────→ │  🟢 PROCESSING      │   │
-│  │  (watching receiver    │  │  ack cam  │  🔵 BLUE = frame OK   │   │
-│  │   ACK window)          │  │           │  🟡 YELLOW = retry    │   │
-│  └────────────────────────┘  │           │  └─────────────────────┘   │
-└──────────────────────────────┘           └─────────────────────────────┘
-```
+The original MARICHI mode. Fastest throughput. Requires cameras on both devices.
 
-### Signal Meaning
-
-| Receiver shows | Sender sees | Sender action |
-|----------------|-------------|---------------|
-| 🟢 **GREEN** | "Processing" | Wait — receiver is decoding |
-| 🔵 **BLUE** | "ACK" | ✅ Advance to next frame |
-| 🟡 **YELLOW** | "NACK" | ❌ Re-show same frame (retry) |
-
-### Three-Way Checksum Validation
-
-For every frame, the receiver runs **three independent checks**:
-
-```
-Frame received
-    │
-    ├─ 1. ECC decode          → Reed-Solomon corrects camera noise
-    │                              (fails → YELLOW immediately)
-    │
-    ├─ 2. Header CRC32 check  → CRC32(decoded payload) == CRC32 in header
-    │                              (mismatch → YELLOW)
-    │
-    └─ 3. Strip CRC32 check   → CRC32 in checksum strip == header CRC32
-                                   (mismatch → YELLOW)
-
-All three pass → 🔵 BLUE ACK sent
-Any one fails  → 🟡 YELLOW NACK sent → sender retries
-```
-
-The checksum strip is visually encoded as **2 extra rows** at the bottom of every data frame — independent of the main ECC data. It contains the CRC32 × 8 repetitions + RS ECC. Immune to partial row corruption.
-
----
-
-## Physical Setup
-
-### Dual-Camera Configuration (ACK Mode — Recommended)
+### Physical Setup
 
 ```
         ┌───────────────────────────────────────────────────┐
@@ -80,213 +45,299 @@ The checksum strip is visually encoded as **2 extra rows** at the bottom of ever
         │   ┌──────────────┐           ┌──────────────┐    │
         │   │              │ ◄── 30-60cm ──►           │    │
         │   │  DATA FRAME  │           │  ACK WINDOW  │    │
-        │   │  on screen   │           │  blue/green/ │    │
-        │   │              │           │  yellow flash│    │
+        │   │  pixel grid  │           │  blue/green/ │    │
+        │   │  + cksum row │           │  yellow flash│    │
         │   └──────────────┘           └──────────────┘    │
         │     📷 webcam A                   📷 webcam B     │
         │    (at top of lid)               (at top of lid)  │
         │    → points at                   → points at      │
         │      receiver screen               sender screen  │
-        │                                                    │
         └───────────────────────────────────────────────────┘
 ```
 
-Both laptop webcams (built into the screen lids) naturally point toward each other when the laptops face each other.
+### Run Visual Mode
+
+```bash
+# STEP 1 — Receiver first
+python receive.py received.zip                      # cam 0, ACK on
+python receive.py received.zip --cam 1 --block 2    # custom camera
+
+# STEP 2 — Sender
+python send.py myfile.zip --ack-cam 0               # ACK mode (recommended)
+python send.py myfile.zip                           # timer mode (no camera)
+
+# STEP 3 — Validate
+python validate.py myfile.zip received.zip
+```
+
+### ACK Protocol (Visual)
+
+```
+Receiver shows      Sender sees    Sender action
+──────────────────  ─────────────  ────────────────────────────────
+🟢 Solid GREEN      Processing     Wait — receiver is decoding
+🔵 Solid BLUE       ACK            ✅ Advance to next frame
+🟡 Solid YELLOW     NACK           ❌ Re-show same frame (retry)
+```
+
+### Three-Way Checksum (Visual)
+
+```
+Frame received
+    ├─ 1. ECC decode          → Reed-Solomon corrects camera noise
+    ├─ 2. Header CRC32        → CRC32(payload) == header CRC32
+    └─ 3. Strip CRC32         → independent checksum row matches
+All three pass → 🔵 BLUE.  Any failure → 🟡 YELLOW + retry.
+```
+
+### Visual Performance
+
+| Block | ACK Mode | Effective | 25 GB |
+|-------|----------|-----------|-------|
+| `--block 1` | ACK | ~3–5 MB/s | 1.5–2.5 hrs |
+| `--block 2` *(default)* | ACK | ~1–2 MB/s | 3.5–7 hrs |
+| `--block 4` | ACK | ~400 KB/s | ~18 hrs |
+
+---
+
+## Mode C — Audio (MFSK-4 Acoustic Modem)
+
+Transmits data as audio tones through the laptop speaker. Receiver captures via microphone.
+Works when cameras are unavailable. Best for small files (< 10 MB).
+
+### Physical Setup
+
+```
+        ┌─────────────────────────────────────────────────┐
+        │                  AUDIO MODE                      │
+        │                                                  │
+        │   SENDER laptop          RECEIVER laptop         │
+        │   ┌──────────────┐      ┌──────────────┐        │
+        │   │              │      │              │        │
+        │   │  (screen off │      │  (screen off │        │
+        │   │   or idle)   │      │   or idle)   │        │
+        │   └──────────────┘      └──────────────┘        │
+        │       🔊 speaker  ──────►  🎤 mic                │
+        │                                                  │
+        │   Distance: 20–50 cm, quiet room                │
+        │   No line-of-sight needed for screen             │
+        └─────────────────────────────────────────────────┘
+```
 
 **Physical checklist:**
-- [ ] Place laptops facing each other, 30–60 cm apart
-- [ ] Sender screen: **full brightness** (F12 or display settings)
-- [ ] Receiver's ACK window: large, positioned so sender's webcam sees it clearly
-- [ ] Tilt lids slightly toward each other to maximise camera angle
-- [ ] Diffuse room lighting (avoid glare/reflections on sender screen)
-- [ ] Both cameras in focus (tap to lock autofocus if on phone)
+- [ ] Place laptops 20–50 cm apart
+- [ ] Use a quiet room (background noise degrades decode accuracy)
+- [ ] Speaker volume: 80–100%
+- [ ] Microphone sensitivity: default system level
+- [ ] Both devices on the same flat surface (reduces echo)
 
-### Single-Camera Setup (Timer Mode — No ACK)
-
-If you only have one camera (receiver reads sender, no ACK feedback):
-- Use timer mode: sender cycles through all frames on a fixed interval
-- Receiver captures until all frames seen
-- No auto-advance, no retry — the sender loops until you stop it
-
----
-
-## Step-by-Step Run Guide
-
-### STEP 1 — Install (new machine)
-```bash
-git clone https://gecgithub01.walmart.com/n0j02yt/marichi.git
-cd marichi
-pip install -r requirements.txt
-```
-
----
-
-### STEP 2 — Start Receiver FIRST
-
-On the **receiver** machine, open a terminal and run:
+### Run Audio Mode
 
 ```bash
-# Default: camera 0, block size 2, shows ACK window
-python receive.py received_output.zip
+# STEP 1 — Receiver first (microphone listens)
+python receive.py received.bin --mode audio
 
-# Specify camera and block size
-python receive.py received_output.zip --cam 0 --block 2
+# With custom baud rate (must match sender)
+python receive.py received.bin --mode audio --baud 600
 
-# Timer mode (no ACK window, headless)
-python receive.py received_output.zip --no-ack
+# STEP 2 — Sender (plays tones through speaker)
+python send.py myfile.bin --mode audio
+
+# Faster (louder, quieter room needed)
+python send.py myfile.bin --mode audio --baud 600
+
+# No ACK (timer mode — sender plays all frames sequentially)
+python send.py myfile.bin --mode audio --baud 300
 ```
 
-The receiver opens:
-- A small **camera preview window** (what the camera sees)
-- A large **ACK window** (green/blue/yellow — starts dark gray "WAITING")
+### Audio Protocol
 
-> ⚠️ **Always start the receiver before the sender.** The receiver needs to be ready to display ACK before the sender starts watching.
+```
+SENDER speaker plays:
+  MFSK-4 tones at 1200/1800/2400/3000 Hz
+  → 2 bits per symbol
+  → 300 baud × 2 = 600 bps raw
+  → ~56 bytes/sec effective (after RS ECC)
+
+RECEIVER mic listens:
+  FFT peak detection per symbol window
+  CRC32 + RS ECC per frame
+  → ACK tone: 500 Hz (frame OK)
+  → NACK tone: 750 Hz (retry)
+```
+
+### Audio Baud Rate Guide
+
+| Baud | Data rate | Effective | 1 MB | Notes |
+|------|-----------|-----------|------|-------|
+| `300` *(default)* | 600 bps | ~56 B/s | ~18 min | Most reliable |
+| `600` | 1200 bps | ~112 B/s | ~9 min | Good room required |
+| `1200` | 2400 bps | ~225 B/s | ~5 min | Very quiet, close proximity |
+
+> ⚠️ **Baud rate MUST match** on sender and receiver (`--baud 600` on both sides)
+
+### Audio Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| No frames decoded | Increase speaker volume; reduce mic distance |
+| High NACK rate | Use lower `--baud`; reduce background noise |
+| `sounddevice not installed` | `pip install sounddevice` (outside Walmart network) |
+| PortAudio error on macOS | `brew install portaudio` |
+| PortAudio error on Linux | `sudo apt install libportaudio2` |
 
 ---
 
-### STEP 3 — Start Sender
+## Mode D — QR Stream (Phone-Compatible)
 
-On the **sender** machine:
+Displays a rapid stream of QR codes on screen. Receiver scans with any camera — including a phone.
+No special app needed on phone (uses standard QR scan capability).
+
+### Physical Setup
+
+```
+  Option 1: Laptop webcam as receiver
+  ─────────────────────────────────────────────
+        SENDER laptop            RECEIVER laptop
+       ┌──────────────┐         ┌──────────────┐
+       │  QR CODE     │ ◄─30cm─►│  📷 webcam   │
+       │  (animated)  │         │  scanning    │
+       └──────────────┘         └──────────────┘
+
+  Option 2: Phone as receiver (most flexible)
+  ─────────────────────────────────────────────
+        SENDER laptop            Phone / tablet
+       ┌──────────────┐         ┌────────┐
+       │  QR CODE     │ ◄─30cm─►│  📷   │
+       │  (animated)  │         │  cam  │
+       └──────────────┘         └────────┘
+       (python receive.py)      (or web scanner — Phase 2)
+```
+
+**Physical checklist:**
+- [ ] Sender screen: **full brightness**
+- [ ] QR display fills most of the screen (it does by default)
+- [ ] Camera in focus — QR requires sharper focus than pixel mode
+- [ ] Distance: 20–40 cm (QR codes need clear detail)
+- [ ] Good ambient light on sender screen (no glare)
+
+### Run QR Mode
 
 ```bash
-# ACK mode (recommended — sender watches receiver's ACK window)
-python send.py /path/to/myfile.zip --ack-cam 0
+# STEP 1 — Receiver first
+python receive.py received.zip --mode qr                # cam 0, ACK on
+python receive.py received.zip --mode qr --cam 1        # different camera
+python receive.py received.zip --mode qr --no-ack       # headless (phone-only)
 
-# Specify camera index for ACK detection
-python send.py /path/to/myfile.zip --ack-cam 1
+# STEP 2 — Sender
+python send.py myfile.zip --mode qr                     # 3 fps, no ACK
+python send.py myfile.zip --mode qr --fps 5             # faster
+python send.py myfile.zip --mode qr --fps 5 --ack-cam 0 # QR + ACK feedback
 
-# Timer mode fallback (no ACK camera)
-python send.py /path/to/myfile.zip
+# STEP 3 — Validate
+python validate.py myfile.zip received.zip
 ```
 
-**What you'll see on sender:**
-```
-[MARICHI SENDER  v0.2]
-  file        : myfile.zip
-  size        : 524,288,000 B  (500.00 MB)
-  SHA-256     : 3d4f...a9b2
-  session     : 7c3a1f9b0e2d4a6c
-  frames      : 5690
-  ACK mode    : camera 1
+### QR Performance
 
-[BUILDING 5690 FRAMES — includes CRC32 + checksum strip]
-100%|████████████████| 5690/5690 [02:14<00:00]
+| FPS | Effective rate | 1 MB | 100 MB | Notes |
+|-----|---------------|------|--------|-------|
+| `1` | ~2.3 KB/s | 7.5 min | 12.5 hrs | Very slow — only if camera struggles |
+| `3` *(default)* | ~6.9 KB/s | 2.5 min | 4.2 hrs | Conservative, reliable |
+| `5` | ~11.5 KB/s | 1.5 min | 2.5 hrs | Good camera required |
+| `10` | ~23 KB/s | 45 sec | 1.2 hrs | Fast camera + sharp focus |
 
-[SENDER] Opening fullscreen window.
-         ACK camera 1 monitoring receiver screen.
-         Will auto-advance on BLUE ACK, re-show on YELLOW NACK.
-  ✅ Frame    1/5690 ACK'd  (retries=0)
-  ✅ Frame    2/5690 ACK'd  (retries=0)
-  ❌ Frame    3/5690 NACK  (retry #1)       ← YELLOW from receiver
-  ✅ Frame    3/5690 ACK'd  (retries=1)     ← re-shown, now OK
-  ✅ Frame    4/5690 ACK'd  (retries=0)
-  ...
-```
+Each QR frame carries **2,304 bytes** of payload (QR version 40, after RS ECC).
+
+### QR Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| Receiver can't scan QR | Move closer (20–30 cm); increase screen brightness |
+| High NACK / decode fail | Reduce `--fps` (camera needs time to focus per frame) |
+| `qrcode not installed` | `pip install qrcode[pil]` (outside Walmart network) |
+| Phone as receiver | Use `--no-ack` on receive; scan the QR codes manually or use a QR scanning app |
 
 ---
 
-### STEP 4 — Watch Progress
+## Mode ALL — Simultaneous Channels
 
-**Receiver ACK window colours:**
-
-| Colour | Meaning | Duration |
-|--------|---------|---------|
-| 🔘 Dark gray | Waiting for first frame | Until first decode |
-| 🟢 **Solid green** | Decoding in progress | Continuous while scanning |
-| 🔵 **Solid blue** | Frame verified — ACK sent | 1.5 seconds (configurable) |
-| 🟡 **Solid yellow** | Checksum failed — NACK | 1.5 seconds |
-
-**Progress bar on receiver:**
-```
-Receiving:  47%|█████████████▌               | 2675/5690 [08:32<09:45]
-```
-
----
-
-### STEP 5 — Completion
-
-**Receiver** prints:
-```
-[RECEIVER] All 5690 frames received!
-[ASSEMBLING]  5690/5690 frames ...
-[ASSEMBLED]  524,288,000 B → received_output.zip
-             SHA-256     : 3d4f...a9b2
-             Frames recv : 5690/5690
-             Cksum fails : 0
-             Status      : ✅ COMPLETE
-
-✅  Received: received_output.zip
-    Validate: python validate.py <original> received_output.zip
-```
-
-**Sender** screen turns solid **GREEN** "TRANSFER COMPLETE" for 3 seconds, then closes.
-
----
-
-### STEP 6 — Validate
+Runs Visual + Audio + QR all at once. Each channel transmits the full file independently.
+Receiver uses whichever channel it's set up to receive on.
 
 ```bash
-python validate.py /path/to/original/myfile.zip received_output.zip
+# Sender: all channels simultaneously
+python send.py myfile.zip --mode all --ack-cam 0
+
+# Receiver: choose one channel (or run 3 terminals for all three)
+python receive.py recv_visual.zip --mode visual
+python receive.py recv_audio.bin  --mode audio
+python receive.py recv_qr.zip     --mode qr
 ```
 
-**Perfect output:**
-```
-════════════════════════════════════════════════════════════
-  MARICHI VALIDATION REPORT
-════════════════════════════════════════════════════════════
-  Original size      : 524,288,000 bytes
-  Received size      : 524,288,000 bytes
-  Size check         : ✅ MATCH
-
-  Original SHA-256   : 3d4f...a9b2
-  Received SHA-256   : 3d4f...a9b2
-  Hash check         : ✅ MATCH
-
-  Differences        : NONE ✅
-
-  VERDICT            : 🟢  PERFECT
-════════════════════════════════════════════════════════════
-```
-
-Exit code `0` = zero data loss confirmed.
+> **Use case:** Maximum redundancy when environment is uncertain.
+> E.g.: noisy room (audio unreliable) + camera glare (visual struggles) → QR succeeds.
 
 ---
 
-## CLI Reference — v0.2
+## Full CLI Reference — v0.3
 
 ### `send.py`
+
 ```
 python send.py <file> [options]
 
+  --mode / -m   STR   Transport: visual(a) audio(c) qr(d) all. Default: visual
+  --ack-cam/-a  INT   Camera for ACK detection (all modes). Default: -1 (off)
+
+  Visual mode:
   --block / -b  INT   Pixels per cell (1=fast, 4=robust). Default: 2
-  --hold  / -t  INT   Frame hold ms in timer mode.       Default: 80
-  --ack-cam/-a  INT   Camera index for ACK detection.    Default: -1 (disabled)
+  --hold  / -t  INT   Frame hold ms (timer mode only).    Default: 80
+
+  Audio mode:
+  --baud        INT   Baud rate: 300, 600, 1200.          Default: 300
+
+  QR mode:
+  --fps         INT   QR frames per second (1–10).        Default: 3
 
 Examples:
-  python send.py data.zip                        # timer mode, no ACK
-  python send.py data.zip --ack-cam 0            # ACK via camera 0
-  python send.py data.zip --block 1 --ack-cam 1  # high-speed + ACK cam 1
-  python send.py data.zip --block 4              # robust timer mode
+  python send.py data.zip                           # visual, timer
+  python send.py data.zip --ack-cam 0               # visual, ACK
+  python send.py data.zip --mode c                  # audio (Option C)
+  python send.py data.zip --mode audio --baud 600   # faster audio
+  python send.py data.zip --mode d --fps 5          # QR (Option D)
+  python send.py data.zip --mode qr --ack-cam 0     # QR + ACK
+  python send.py data.zip --mode all                # all channels
 ```
 
 ### `receive.py`
+
 ```
 python receive.py <output> [options]
 
-  --cam    / -c  INT   Camera device index.              Default: 0
-  --block  / -b  INT   Must match sender's --block.      Default: 2
-  --timeout/ -t  INT   Max wait seconds.                 Default: 7200
-  --ack-ms        INT   ACK flash duration ms.           Default: 1500
-  --no-ack             Disable ACK window (headless).
+  --mode / -m   STR   Transport: visual(a) audio(c) qr(d). Default: visual
+  --timeout/-t  INT   Max wait seconds.                   Default: 7200
+  --no-ack           Disable ACK window (headless mode).
+
+  Visual / QR:
+  --cam   / -c  INT   Camera device index.                Default: 0
+  --block / -b  INT   Must match sender's --block.        Default: 2
+  --ack-ms      INT   ACK flash duration ms.              Default: 1500
+
+  Audio:
+  --baud        INT   Must match sender's --baud.         Default: 300
 
 Examples:
-  python receive.py out.zip                      # standard
-  python receive.py out.zip --cam 1 --block 2    # different camera
-  python receive.py out.zip --ack-ms 2000        # slower ACK for older cameras
-  python receive.py out.zip --no-ack             # headless / terminal only
+  python receive.py out.zip                         # visual, standard
+  python receive.py out.zip --cam 1 --block 2       # visual, other camera
+  python receive.py out.bin --mode c                # audio (Option C)
+  python receive.py out.bin --mode audio --baud 600 # must match sender
+  python receive.py out.zip --mode d                # QR (Option D)
+  python receive.py out.zip --mode qr --no-ack      # QR, headless
 ```
 
 ### `validate.py`
+
 ```
 python validate.py <original> <received>
 
@@ -296,21 +347,24 @@ python validate.py <original> <received>
 
 ---
 
-## Troubleshooting
+## Install
 
-| Problem | Cause | Fix |
-|---------|-------|-----|
-| Sender stuck on same frame | ACK cam not seeing BLUE | Position ACK window closer to sender cam |
-| All frames show YELLOW | Camera too far / block too small | Use `--block 4`, improve lighting |
-| Receiver sees no frames | Camera not on sender screen | Move closer; try `--cam 1` |
-| NACK loop (never ACKs) | Lighting / angle issue | Adjust sender screen brightness or camera angle |
-| ACK cam false positives | Room has blue/yellow lights | Dim ambient lights; close blinds |
-| `Cannot open camera` | Wrong index | Run camera list check below |
-| Sender times out (30s) | ACK too slow | Reduce `--ack-ms` on receiver |
-
-**List cameras:**
 ```bash
-python -c "import cv2; [print(f'cam {i}:', 'OK' if cv2.VideoCapture(i).isOpened() else 'not found') for i in range(5)]"
+# Clone
+git clone https://gecgithub01.walmart.com/n0j02yt/marichi.git
+# or:
+git clone https://github.com/SandeepJosyula/marichi.git
+
+cd marichi
+
+# Install all dependencies (do this OUTSIDE Walmart corporate network)
+pip install -r requirements.txt
+
+# Or install only what you need:
+pip install numpy reedsolo tqdm             # core (all modes)
+pip install opencv-python                  # visual + QR modes
+pip install sounddevice                    # audio mode only
+pip install qrcode[pil]                    # QR sender only
 ```
 
 ---
@@ -318,10 +372,10 @@ python -c "import cv2; [print(f'cam {i}:', 'OK' if cv2.VideoCapture(i).isOpened(
 ## Splitting 25 GB Files
 
 ```bash
-# Split on sender
+# Split on sender (4 GB chunks)
 split -b 4G bigfile.tar.gz chunk_
 
-# Send each
+# Send each chunk — visual mode recommended for 25 GB
 python send.py chunk_aa --ack-cam 0
 python send.py chunk_ab --ack-cam 0
 # ...
@@ -331,7 +385,7 @@ python receive.py chunk_aa_recv --cam 0
 python receive.py chunk_ab_recv --cam 0
 # ...
 
-# Reassemble
+# Reassemble on receiver
 cat chunk_aa_recv chunk_ab_recv ... > bigfile_received.tar.gz
 
 # Final validation
@@ -340,42 +394,48 @@ python validate.py bigfile.tar.gz bigfile_received.tar.gz
 
 ---
 
-## Performance Estimates
-
-| Block | ACK Mode | Effective | 25 GB |
-|-------|----------|-----------|-------|
-| `--block 1` | ACK | ~3–5 MB/s | 1.5–2.5 hrs |
-| `--block 2` *(default)* | ACK | ~1–2 MB/s | 3.5–7 hrs |
-| `--block 2` | Timer | ~1.9 MB/s | ~3.7 hrs |
-| `--block 4` | ACK | ~400 KB/s | ~18 hrs |
-
-> ACK mode is slightly slower than timer mode because it waits for each frame to be confirmed before advancing. But it guarantees **zero data loss** — every byte is confirmed before the sender moves on.
-
----
-
 ## Quick Reference Card
 
 ```
 ALWAYS START RECEIVER FIRST, THEN SENDER.
 
-RECEIVER:  python receive.py <output>  --cam 0 --block 2
-SENDER:    python send.py    <file>    --ack-cam 0 --block 2
-VALIDATE:  python validate.py <original> <received>
+═══ MODE A — VISUAL (default, fastest) ════════════════════
+RECEIVER:  python receive.py <output> --cam 0 --block 2
+SENDER:    python send.py <file>      --ack-cam 0 --block 2
 
-Block rule: --block on receiver MUST equal --block on sender.
+═══ MODE C — AUDIO (speaker/mic, no cameras) ══════════════
+RECEIVER:  python receive.py <output> --mode audio
+SENDER:    python send.py <file>      --mode audio
+⚠️  Baud must match: add --baud 600 on BOTH sides if faster
 
-ACK signals:
+═══ MODE D — QR STREAM (phone/tablet compatible) ══════════
+RECEIVER:  python receive.py <output> --mode qr --cam 0
+SENDER:    python send.py <file>      --mode qr --fps 3
+
+═══ VALIDATE (all modes) ══════════════════════════════════
+python validate.py <original> <received>
+
+═══ ALL MODES SIMULTANEOUSLY ══════════════════════════════
+SENDER:    python send.py <file> --mode all
+
+ACK signals (Visual + QR modes):
   🟢 GREEN  = processing (wait)
   🔵 BLUE   = ACK — sender advances
-  🟡 YELLOW = NACK — sender retries same frame
+  🟡 YELLOW = NACK — sender retries
 
-Checksum: 3-way verification per frame
-  1. Reed-Solomon ECC decode
-  2. CRC32(payload) == header CRC32
-  3. CRC32(payload) == checksum strip CRC32
-All three must pass for BLUE. Any failure = YELLOW.
+ACK tones (Audio mode):
+  500 Hz = ACK — sender advances
+  750 Hz = NACK — sender retries
 
-Verdict codes:
+Mode selector shorthand:
+  --mode a  = visual (default)
+  --mode c  = audio
+  --mode d  = qr
+
+Camera list check:
+  python -c "import cv2; [print(f'cam {i}:', 'OK' if cv2.VideoCapture(i).isOpened() else 'not found') for i in range(5)]"
+
+Verdict codes (validate.py):
   🟢 PERFECT       → exit 0, zero data loss
   🟡 DEGRADED      → exit 1, < 5% bytes wrong
   🔴 SIZE_MISMATCH → exit 1, frames missed
@@ -384,7 +444,7 @@ Verdict codes:
 
 ---
 
-*MARICHI (मरीचि) v0.2 — "ray of light; a mirage"*
+*MARICHI (मरीचि) v0.3 — "ray of light; a mirage"*
 *🌀 Magic applied with Sandeep Josyula's VASS !! 🪄*
 
 ---

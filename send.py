@@ -1,25 +1,36 @@
 #!/usr/bin/env python3
 """
-MARICHI Sender  v0.2  — with ACK auto-advance
+MARICHI Sender  v0.3  — multi-transport
+
+Transmission modes:
+  --mode visual  (A) — Full-screen pixel frames via screen + camera  [default]
+  --mode audio   (C) — MFSK acoustic modem via speaker + microphone
+  --mode qr      (D) — QR-code animation via screen + camera (phone-compatible)
+  --mode all         — All three simultaneously (maximum reliability)
 
 Usage:
-    python send.py <file>                            # timer mode (no ACK camera)
-    python send.py <file> --ack-cam 1                # ACK mode: camera 1 watches receiver
-    python send.py <file> --block 1 --ack-cam 1      # fast + ACK mode
-    python send.py <file> --block 4 --hold 120       # robust timer mode
+    python send.py <file>                              # visual, timer mode
+    python send.py <file> --ack-cam 0                 # visual, ACK mode
+    python send.py <file> --mode audio                # acoustic modem
+    python send.py <file> --mode audio --baud 600     # faster audio
+    python send.py <file> --mode qr                   # QR stream, timer
+    python send.py <file> --mode qr   --fps 5 --ack-cam 0  # QR + ACK
+    python send.py <file> --mode all  --ack-cam 0     # all channels + ACK
 
-ACK mode (recommended):
-    Set up sender's webcam to point at receiver's ACK window.
-    Sender auto-advances only when receiver signals BLUE (frame verified).
-    Re-shows same frame on YELLOW (checksum mismatch).
+Choosing a mode:
+  visual  → Two laptops facing each other with cameras  (fastest: ~1-3 MB/s)
+  qr      → Phone or tablet as receiver                 (~6-22 KB/s)
+  audio   → No cameras, audio-only hardware             (~50-200 bytes/s)
+  all     → Redundancy / maximum reliability            (all channels)
 """
 
 import argparse
 import sys
 import os
+import threading
 
 
-def _apply_config(args):
+def _apply_visual_config(args):
     import marichi.config as cfg
     cfg.BLOCK_SIZE    = args.block
     cfg.CELLS_X       = cfg.SCREEN_W // args.block
@@ -40,34 +51,129 @@ def _apply_config(args):
     cfg.ACK_CAM_INDEX     = args.ack_cam
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="MARICHI (मरीचि) — Visual Modem Sender  v0.2",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__
-    )
-    parser.add_argument("file",               help="Path to file to transmit")
-    parser.add_argument("--block",   "-b", type=int, default=2,
-                        help="Pixels per cell (1=fast, 4=robust). Default: 2")
-    parser.add_argument("--hold",    "-t", type=int, default=80,
-                        help="Frame hold ms in timer mode. Default: 80")
-    parser.add_argument("--ack-cam", "-a", type=int, default=-1,
-                        dest="ack_cam",
-                        help="Camera index for ACK detection (-1=disabled). Default: -1")
-    args = parser.parse_args()
-
-    if not os.path.exists(args.file):
-        print(f"ERROR: File not found: {args.file}")
-        sys.exit(1)
-
-    _apply_config(args)
-
+def _run_visual(args):
+    _apply_visual_config(args)
     from marichi.sender import Sender
     s = Sender(args.file,
                block_size=args.block,
                hold_ms=args.hold,
                ack_cam=args.ack_cam)
     s.run()
+
+
+def _run_audio(args):
+    from marichi.transport.audio_modem import AudioSender, BAUD_RATE
+    baud = args.baud if args.baud > 0 else BAUD_RATE
+    s = AudioSender(args.file,
+                    baud=baud,
+                    ack_mode=(args.ack_cam >= 0))
+    s.run()
+
+
+def _run_qr(args):
+    from marichi.transport.qr_stream import QRSender
+    fps = args.fps if args.fps > 0 else 3
+    s = QRSender(args.file,
+                 fps=fps,
+                 ack_cam=args.ack_cam)
+    s.run()
+
+
+def _run_all(args):
+    """Run visual + audio + QR simultaneously in separate threads."""
+    print("\n[MARICHI — ALL MODES]  Starting visual + audio + QR simultaneously.")
+    print("  Each mode transmits independently.")
+    print("  Receiver can use any one or all modes.\n")
+
+    errors = {}
+
+    def visual_worker():
+        try:
+            _run_visual(args)
+        except Exception as e:
+            errors["visual"] = str(e)
+            print(f"\n[ALL] Visual mode error: {e}")
+
+    def audio_worker():
+        try:
+            _run_audio(args)
+        except Exception as e:
+            errors["audio"] = str(e)
+            print(f"\n[ALL] Audio mode error: {e}")
+
+    def qr_worker():
+        try:
+            _run_qr(args)
+        except Exception as e:
+            errors["qr"] = str(e)
+            print(f"\n[ALL] QR mode error: {e}")
+
+    threads = [
+        threading.Thread(target=visual_worker, name="visual", daemon=True),
+        threading.Thread(target=audio_worker,  name="audio",  daemon=True),
+        threading.Thread(target=qr_worker,     name="qr",     daemon=True),
+    ]
+    for t in threads:
+        t.start()
+    try:
+        for t in threads:
+            t.join()
+    except KeyboardInterrupt:
+        print("\n[ALL] Aborted.")
+
+    if errors:
+        print(f"\n[ALL] Errors: {errors}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="MARICHI (मरीचि) — Multi-Transport Sender  v0.3",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument("file", help="Path to file to transmit")
+
+    # Mode selection
+    parser.add_argument("--mode", "-m",
+                        choices=["visual", "audio", "qr", "all",
+                                 "a", "c", "d"],   # single-letter aliases
+                        default="visual",
+                        help="Transport mode: visual(A) audio(C) qr(D) all. Default: visual")
+
+    # Visual mode options
+    parser.add_argument("--block",   "-b", type=int, default=2,
+                        help="[visual] Pixels per cell (1=fast, 4=robust). Default: 2")
+    parser.add_argument("--hold",    "-t", type=int, default=80,
+                        help="[visual] Frame hold ms in timer mode. Default: 80")
+    parser.add_argument("--ack-cam", "-a", type=int, default=-1,
+                        dest="ack_cam",
+                        help="Camera index for ACK detection, all modes. Default: -1")
+
+    # Audio mode options
+    parser.add_argument("--baud",    type=int, default=0,
+                        help="[audio] Baud rate: 300, 600, 1200. Default: 300")
+
+    # QR mode options
+    parser.add_argument("--fps",     type=int, default=0,
+                        help="[qr] QR frames per second (1–10). Default: 3")
+
+    args = parser.parse_args()
+
+    # Normalise single-letter aliases
+    alias = {"a": "visual", "c": "audio", "d": "qr"}
+    args.mode = alias.get(args.mode, args.mode)
+
+    if not os.path.exists(args.file):
+        print(f"ERROR: File not found: {args.file}")
+        sys.exit(1)
+
+    dispatch = {
+        "visual": _run_visual,
+        "audio":  _run_audio,
+        "qr":     _run_qr,
+        "all":    _run_all,
+    }
+    dispatch[args.mode](args)
 
 
 if __name__ == "__main__":
