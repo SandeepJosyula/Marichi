@@ -613,7 +613,9 @@ async function onFileSelect(input, nameId, pathId) {
     const r = await fetch('/api/upload', { method: 'POST', body: fd });
     const d = await r.json();
     if (d.path) {
-      document.getElementById(pathId).value = d.path;
+      const pathEl = document.getElementById(pathId);
+      pathEl.value = d.path;
+      pathEl.dataset.originalName = d.filename || '';  // FIX #5: preserve for QR session
       toast(`✅ Uploaded: ${d.filename}`);
     } else {
       toast('❌ Upload failed: ' + (d.error || 'unknown'));
@@ -763,7 +765,10 @@ async function stopJob(tab) {
 
 // ── QR Web Transfer ───────────────────────────────────────────────────────────
 async function startQRSession() {
-  const path = document.getElementById('qr-file-path').value;
+  // FIX #5: read original filename from dataset (set during upload)
+  const pathEl   = document.getElementById('qr-file-path');
+  const path     = pathEl.value;
+  const origName = pathEl.dataset.originalName || '';
   if (!path) { toast('⚠️ Select a file first'); return; }
 
   const btn = document.getElementById('qr-start-btn');
@@ -774,7 +779,7 @@ async function startQRSession() {
     const r = await fetch('/api/qr/start', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ path })
+      body: JSON.stringify({ path, name: origName })  // FIX #5: pass original name
     });
     const d = await r.json();
     if (d.error) throw new Error(d.error);
@@ -788,7 +793,11 @@ async function startQRSession() {
     document.getElementById('qr-tot-frames').textContent = d.total;
     document.getElementById('qr-gen-status').textContent = '';
     document.getElementById('qr-step2').style.display = '';
-    document.getElementById('scanner-url-box').textContent = netInfo.scanner_url + '?s=' + d.session_id;
+
+    // FIX #3: update connect QR to include session ID so phone auto-connects
+    const scannerSessionUrl = netInfo.scanner_url + '?s=' + d.session_id;
+    document.getElementById('scanner-url-box').textContent = scannerSessionUrl;
+    generateConnectQR(scannerSessionUrl);
 
     toast(`✅ QR session ready — ${d.total} frames`);
     qrShowFrame(0);
@@ -837,7 +846,7 @@ async function qrPollStatus() {
     const r = await fetch(`/api/qr/status/${state.qr.sessionId}`);
     const d = await r.json();
     state.qr.acked     = d.acked || 0;
-    state.qr.ackedSet  = new Set(); // simplified: just track count
+    state.qr.ackedSet  = new Set(d.acked_set || []); // FIX #4: real frame numbers so loop skips them
     const pct = state.qr.total > 0 ? (d.acked / state.qr.total * 100) : 0;
     document.getElementById('qr-pfill').style.width = pct + '%';
     document.getElementById('qr-pct').textContent = Math.round(pct) + '%';
@@ -877,18 +886,12 @@ function stopQRSession() {
 }
 
 // ── Generate connect QR (QR of the scanner URL) ───────────────────────────────
-async function generateConnectQR(url) {
-  // Use server to generate the QR code image for the scanner URL
-  try {
-    const r = await fetch('/api/qr/start', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ path: '__url__:' + url })
-    });
-    // This won't work for URL — we just display the text URL prominently instead
-  } catch(e) {}
-  // Use the text URL directly as fallback
-  document.getElementById('connect-qr-img').style.display = 'none';
+// FIX #3: use the dedicated /api/qr/connect endpoint instead of broken /api/qr/start
+function generateConnectQR(url) {
+  const img = document.getElementById('connect-qr-img');
+  img.src   = '/api/qr/connect?url=' + encodeURIComponent(url);
+  img.style.display = '';
+  img.onerror = () => { img.style.display = 'none'; };
 }
 
 // ── Scanner (phone side) ──────────────────────────────────────────────────────
