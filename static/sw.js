@@ -1,6 +1,7 @@
 // MARICHI Service Worker — caches UI for offline scanner use
-const CACHE = 'marichi-v1';
-const PRECACHE = ['/', '/scanner', '/static/manifest.json', '/static/sw.js'];
+const CACHE = 'marichi-v2';
+const PRECACHE = ['/', '/scanner', '/static/manifest.json', '/static/sw.js',
+                  '/static/icon.svg', '/static/icon-192.png', '/static/icon-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(

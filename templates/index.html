@@ -551,7 +551,7 @@ const IS_SCANNER = %%SCANNER%%;
 const state = {
   send:    { jobId: null, es: null },
   receive: { jobId: null, es: null },
-  qr:      { sessionId: null, curFrame: 0, total: 0, holdMs: 1500, paused: false, timer: null, acked: 0 },
+  qr:      { sessionId: null, curFrame: 0, total: 0, holdMs: 1500, paused: false, timer: null, acked: 0, ackedSet: new Set() },
   scanner: { stream: null, frames: new Map(), total: 0, sid: null, name: 'received', rafId: null },
 };
 

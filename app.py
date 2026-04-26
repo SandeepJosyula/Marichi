@@ -68,7 +68,9 @@ def _run_subprocess(job: dict, cmd: list, cwd: str) -> None:
         for line in proc.stdout:
             job['log_q'].put(line.rstrip('\n'))
         proc.wait()
-        job['status'] = 'done' if proc.returncode == 0 else 'error'
+        # Don't overwrite 'stopped' set by _api_stop() — that wins over 'error'
+        if job['status'] != 'stopped':
+            job['status'] = 'done' if proc.returncode == 0 else 'error'
         job['log_q'].put(f'__DONE__ {proc.returncode}')
     except Exception as exc:
         job['status'] = 'error'
