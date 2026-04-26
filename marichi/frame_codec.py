@@ -220,7 +220,7 @@ def encode_frame_fast(payload: bytes,
 
     # ── ECC data region ────────────────────────────────────────────────────────
     ecc_enc   = _ecc_encode(payload)
-    n_cells   = (C.N_ECC_CHUNKS * C.CHUNK_ENC * 8) // C.BITS_PER_CELL
+    n_cells   = C.DATA_CELLS   # use full grid; _bytes_to_cells zero-pads to fit
     data_cell = _bytes_to_cells(ecc_enc, n_cells).reshape(C.DATA_ROWS, C.DATA_COLS)
     y0d = C.DATA_Y0 * C.BLOCK_SIZE
     y1d = C.CKSUM_Y0 * C.BLOCK_SIZE    # stop BEFORE checksum strip

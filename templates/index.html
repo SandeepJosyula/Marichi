@@ -1,0 +1,1187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+<meta name="theme-color" content="#0d1117"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<title>MARICHI मरीचि</title>
+<link rel="manifest" href="/static/manifest.json"/>
+<style>
+/* ── Reset & Variables ─────────────────────────────────────────────────── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d1117;--card:#161b22;--card2:#1c2128;--border:#30363d;
+  --primary:#58a6ff;--primary-dark:#1f6feb;--success:#3fb950;
+  --warn:#d29922;--danger:#f85149;--text:#c9d1d9;--muted:#8b949e;
+  --font:system-ui,-apple-system,'Segoe UI',sans-serif;
+  --radius:8px;--radius-lg:12px;
+}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--font);font-size:15px;line-height:1.5}
+a{color:var(--primary);text-decoration:none}
+button{cursor:pointer;font-family:inherit;font-size:inherit}
+input,select,textarea{font-family:inherit;font-size:inherit}
+
+/* ── Layout ────────────────────────────────────────────────────────────── */
+#app{display:flex;flex-direction:column;min-height:100vh}
+.topbar{background:var(--card);border-bottom:1px solid var(--border);padding:0 16px;
+        display:flex;align-items:center;gap:12px;height:56px;position:sticky;top:0;z-index:100}
+.topbar .logo{font-size:20px;font-weight:700;white-space:nowrap;
+              background:linear-gradient(135deg,var(--primary),#bc8cff);
+              -webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.topbar .tagline{font-size:12px;color:var(--muted);display:none}
+@media(min-width:600px){.topbar .tagline{display:block}}
+.topbar .spacer{flex:1}
+.net-badge{font-size:11px;color:var(--muted);background:var(--card2);
+           border:1px solid var(--border);border-radius:20px;padding:3px 10px;
+           white-space:nowrap;cursor:pointer}
+.net-badge:hover{border-color:var(--primary);color:var(--text)}
+
+/* ── Tab nav ───────────────────────────────────────────────────────────── */
+.tabnav{background:var(--card);border-bottom:1px solid var(--border);
+        display:flex;overflow-x:auto;scrollbar-width:none;padding:0 8px}
+.tabnav::-webkit-scrollbar{display:none}
+.tabnav button{flex:none;padding:10px 18px;border:none;background:none;color:var(--muted);
+               font-size:13px;font-weight:500;border-bottom:2px solid transparent;
+               transition:color .15s,border-color .15s;white-space:nowrap}
+.tabnav button.active{color:var(--text);border-bottom-color:var(--primary)}
+.tabnav button:hover:not(.active){color:var(--text)}
+.tabnav button .icon{margin-right:5px}
+
+/* ── Content ───────────────────────────────────────────────────────────── */
+.content{flex:1;max-width:900px;width:100%;margin:0 auto;padding:20px 16px}
+.tab-panel{display:none}
+.tab-panel.active{display:block}
+
+/* ── Cards ─────────────────────────────────────────────────────────────── */
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px;margin-bottom:16px}
+.card h3{font-size:14px;font-weight:600;color:var(--muted);text-transform:uppercase;
+         letter-spacing:.05em;margin-bottom:16px}
+
+/* ── Form Controls ─────────────────────────────────────────────────────── */
+.field{margin-bottom:14px}
+.field label{display:block;font-size:13px;color:var(--muted);margin-bottom:5px;font-weight:500}
+.field input,.field select{width:100%;background:var(--card2);border:1px solid var(--border);
+  border-radius:var(--radius);padding:8px 12px;color:var(--text);outline:none;
+  transition:border-color .15s}
+.field input:focus,.field select:focus{border-color:var(--primary)}
+.field select option{background:var(--card2)}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:500px){.row2{grid-template-columns:1fr}}
+
+/* ── File drop zone ────────────────────────────────────────────────────── */
+.dropzone{border:2px dashed var(--border);border-radius:var(--radius-lg);
+          padding:28px 20px;text-align:center;cursor:pointer;transition:all .2s;
+          position:relative;overflow:hidden}
+.dropzone:hover,.dropzone.drag-over{border-color:var(--primary);background:rgba(88,166,255,.05)}
+.dropzone .dz-icon{font-size:32px;margin-bottom:8px}
+.dropzone .dz-text{color:var(--muted);font-size:13px}
+.dropzone .dz-text strong{color:var(--primary)}
+.dropzone .dz-file{font-size:13px;color:var(--success);font-weight:500;margin-top:6px;word-break:break-all}
+.dropzone input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer}
+
+/* ── Mode selector ─────────────────────────────────────────────────────── */
+.mode-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px}
+@media(max-width:500px){.mode-grid{grid-template-columns:repeat(2,1fr)}}
+.mode-btn{background:var(--card2);border:2px solid var(--border);border-radius:var(--radius);
+          padding:10px 6px;text-align:center;cursor:pointer;transition:all .15s;position:relative}
+.mode-btn input{position:absolute;opacity:0;width:0;height:0}
+.mode-btn .mi{font-size:22px;display:block;margin-bottom:3px}
+.mode-btn .ml{font-size:11px;font-weight:600;color:var(--muted)}
+.mode-btn.selected{border-color:var(--primary);background:rgba(88,166,255,.1)}
+.mode-btn.selected .ml{color:var(--primary)}
+
+/* ── Collapsible advanced ──────────────────────────────────────────────── */
+.adv-toggle{font-size:12px;color:var(--muted);cursor:pointer;user-select:none;
+            display:flex;align-items:center;gap:4px;margin-bottom:10px}
+.adv-toggle:hover{color:var(--text)}
+.adv-body{display:none}
+.adv-body.open{display:block}
+
+/* ── Buttons ───────────────────────────────────────────────────────────── */
+.btn{display:inline-flex;align-items:center;gap:6px;padding:9px 18px;
+     border-radius:var(--radius);font-weight:600;font-size:13px;border:none;
+     transition:opacity .15s,transform .1s;cursor:pointer}
+.btn:active{transform:scale(.97)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn-primary{background:var(--primary-dark);color:#fff}
+.btn-primary:hover:not(:disabled){background:var(--primary)}
+.btn-success{background:#238636;color:#fff}
+.btn-success:hover:not(:disabled){background:var(--success)}
+.btn-danger{background:#b91c1c;color:#fff}
+.btn-danger:hover:not(:disabled){background:var(--danger)}
+.btn-ghost{background:var(--card2);color:var(--text);border:1px solid var(--border)}
+.btn-ghost:hover:not(:disabled){border-color:var(--primary)}
+.btn-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:6px}
+
+/* ── Status badge ──────────────────────────────────────────────────────── */
+.badge{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600;
+       padding:3px 10px;border-radius:20px;background:var(--card2);border:1px solid var(--border)}
+.badge.idle{color:var(--muted)}
+.badge.running{color:var(--warn);border-color:var(--warn)}
+.badge.done{color:var(--success);border-color:var(--success)}
+.badge.error,.badge.stopped{color:var(--danger);border-color:var(--danger)}
+.pulse{width:7px;height:7px;border-radius:50%;background:currentColor;
+       animation:pulse 1.2s ease-in-out infinite}
+.badge.running .pulse{display:inline-block}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+
+/* ── Log console ───────────────────────────────────────────────────────── */
+.console{background:#010409;border:1px solid var(--border);border-radius:var(--radius);
+         padding:12px;font-family:'SF Mono','Fira Code',Consolas,monospace;font-size:12px;
+         height:220px;overflow-y:auto;color:#7ee787;line-height:1.6;white-space:pre-wrap;
+         word-break:break-word}
+.console .err{color:var(--danger)}
+.console .warn{color:var(--warn)}
+.console-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.console-header span{font-size:12px;color:var(--muted);font-weight:500}
+.clear-btn{font-size:11px;color:var(--muted);background:none;border:none;cursor:pointer;padding:2px 6px}
+.clear-btn:hover{color:var(--text)}
+
+/* ── Progress ──────────────────────────────────────────────────────────── */
+.progress-bar{height:4px;background:var(--card2);border-radius:2px;overflow:hidden;margin:10px 0}
+.progress-fill{height:100%;background:var(--primary);border-radius:2px;
+               transition:width .3s ease;width:0}
+
+/* ── QR Transfer ───────────────────────────────────────────────────────── */
+.qr-layout{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:650px){.qr-layout{grid-template-columns:1fr}}
+
+.qr-display-box{background:var(--card2);border:1px solid var(--border);border-radius:var(--radius-lg);
+                padding:20px;display:flex;flex-direction:column;align-items:center;gap:12px;min-height:320px}
+.qr-img-wrap{background:#fff;border-radius:var(--radius);padding:8px;
+             display:flex;align-items:center;justify-content:center;width:100%;max-width:280px}
+.qr-img-wrap img{width:100%;max-width:260px;display:block;image-rendering:pixelated}
+.qr-counter{font-size:13px;color:var(--muted);text-align:center}
+.qr-speed{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:center}
+.qr-speed label{font-size:12px;color:var(--muted)}
+.qr-speed input[type=range]{accent-color:var(--primary);width:100px}
+
+.phone-card{background:var(--card2);border:1px solid var(--border);border-radius:var(--radius-lg);
+            padding:20px;display:flex;flex-direction:column;align-items:center;gap:12px}
+.phone-url-box{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
+               padding:8px 14px;font-size:13px;word-break:break-all;text-align:center;color:var(--primary)}
+.connect-qr{background:#fff;border-radius:var(--radius);padding:6px;display:inline-block}
+.connect-qr img{width:140px;height:140px;display:block}
+
+/* ── Scanner (phone view) ──────────────────────────────────────────────── */
+#scanner-view{display:none;position:fixed;inset:0;background:#000;z-index:200;
+              flex-direction:column;align-items:center;justify-content:flex-start}
+#scanner-view.active{display:flex}
+.scanner-header{width:100%;padding:16px;display:flex;align-items:center;gap:10px;
+                background:rgba(0,0,0,.7);backdrop-filter:blur(8px);position:relative;z-index:2}
+.scanner-header h2{font-size:18px;font-weight:700;color:#fff}
+.scanner-header .close-btn{margin-left:auto;background:none;border:none;color:#fff;font-size:22px;cursor:pointer}
+.scanner-video-wrap{width:100%;flex:1;position:relative;overflow:hidden;max-height:calc(100vh - 200px)}
+#scanner-video{width:100%;height:100%;object-fit:cover}
+.scanner-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+.scan-box{width:min(65vw,280px);height:min(65vw,280px);border:3px solid var(--primary);
+          border-radius:16px;box-shadow:0 0 0 4000px rgba(0,0,0,.5)}
+.scan-corners::before,.scan-corners::after{content:'';position:absolute;
+  width:24px;height:24px;border-color:var(--primary);border-style:solid}
+.scanner-status{width:100%;padding:16px;background:rgba(0,0,0,.8);text-align:center;min-height:140px}
+.scanner-status .progress-bar{margin:12px 0}
+.scanner-status #scan-info{font-size:14px;color:var(--muted);margin-bottom:6px}
+.scanner-status #scan-count{font-size:26px;font-weight:700;color:var(--primary)}
+.scanner-status #scan-total{font-size:14px;color:var(--muted)}
+#scan-done-btn{display:none;margin-top:12px}
+
+/* ── Validate ──────────────────────────────────────────────────────────── */
+.verdict-card{padding:20px;border-radius:var(--radius-lg);border:2px solid;text-align:center;margin-top:16px}
+.verdict-card.PERFECT{background:rgba(63,185,80,.08);border-color:var(--success)}
+.verdict-card.DEGRADED{background:rgba(210,153,34,.08);border-color:var(--warn)}
+.verdict-card.CORRUPT,.verdict-card.SIZE_MISMATCH{background:rgba(248,81,73,.08);border-color:var(--danger)}
+.verdict-icon{font-size:42px;margin-bottom:8px}
+.verdict-label{font-size:22px;font-weight:700;margin-bottom:12px}
+.verdict-card.PERFECT .verdict-label{color:var(--success)}
+.verdict-card.DEGRADED .verdict-label{color:var(--warn)}
+.verdict-card.CORRUPT .verdict-label,.verdict-card.SIZE_MISMATCH .verdict-label{color:var(--danger)}
+.stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;text-align:left;margin-top:12px}
+@media(max-width:400px){.stats-grid{grid-template-columns:1fr}}
+.stat-item{background:rgba(255,255,255,.04);border-radius:6px;padding:8px 12px}
+.stat-item .sk{font-size:11px;color:var(--muted);margin-bottom:2px}
+.stat-item .sv{font-size:13px;font-weight:600;word-break:break-all}
+
+/* ── Toast ─────────────────────────────────────────────────────────────── */
+#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(100px);
+       background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
+       padding:10px 20px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.5);
+       transition:transform .25s ease;z-index:9999;pointer-events:none}
+#toast.show{transform:translateX(-50%) translateY(0)}
+
+/* ── Misc ──────────────────────────────────────────────────────────────── */
+.section-title{font-size:20px;font-weight:700;margin-bottom:4px}
+.section-sub{font-size:13px;color:var(--muted);margin-bottom:20px}
+hr{border:none;border-top:1px solid var(--border);margin:16px 0}
+.chip{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;
+      border-radius:20px;background:var(--card2);border:1px solid var(--border);color:var(--muted)}
+.chip.green{color:var(--success);border-color:var(--success)}
+.chip.blue{color:var(--primary);border-color:var(--primary)}
+.spacer{flex:1}
+</style>
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ── Top bar ────────────────────────────────────────────────────────── -->
+  <header class="topbar">
+    <span class="logo">🌀 MARICHI</span>
+    <span class="tagline">मरीचि — Zero-Loss Transfer</span>
+    <div class="spacer"></div>
+    <span class="net-badge" id="net-badge" title="Click to copy scanner URL" onclick="copyScanner()">
+      Loading…
+    </span>
+  </header>
+
+  <!-- ── Tab navigation ─────────────────────────────────────────────────── -->
+  <nav class="tabnav" id="main-tabnav">
+    <button class="active" onclick="showTab('send',this)"><span class="icon">📤</span>Send</button>
+    <button onclick="showTab('receive',this)"><span class="icon">📥</span>Receive</button>
+    <button onclick="showTab('qr',this)"><span class="icon">📱</span>QR Transfer</button>
+    <button onclick="showTab('validate',this)"><span class="icon">✅</span>Validate</button>
+  </nav>
+
+  <!-- ══════════════════════════════════════════════════════════════════════
+       TAB: SEND
+  ═══════════════════════════════════════════════════════════════════════ -->
+  <main class="content">
+  <div class="tab-panel active" id="tab-send">
+    <p class="section-title">Send File</p>
+    <p class="section-sub">Upload a file and broadcast via your chosen transport.</p>
+
+    <div class="card">
+      <h3>File</h3>
+      <div class="dropzone" id="send-dz" ondragover="dzDrag(event,'send-dz')"
+           ondragleave="dzLeave('send-dz')" ondrop="dzDrop(event,'send-dz','send-file-input')">
+        <div class="dz-icon">📁</div>
+        <p class="dz-text"><strong>Click or drag</strong> a file to upload</p>
+        <p class="dz-file" id="send-file-name">No file selected</p>
+        <input type="file" id="send-file-input" onchange="onFileSelect(this,'send-file-name','send-file-path')"/>
+      </div>
+      <input type="hidden" id="send-file-path"/>
+    </div>
+
+    <div class="card">
+      <h3>Transport Mode</h3>
+      <div class="mode-grid" id="send-mode-grid">
+        <label class="mode-btn selected"><input type="radio" name="send-mode" value="visual" checked onchange="onModeChange('send-mode-grid',this)"><span class="mi">🖥️</span><span class="ml">Visual</span></label>
+        <label class="mode-btn"><input type="radio" name="send-mode" value="audio" onchange="onModeChange('send-mode-grid',this)"><span class="mi">🔊</span><span class="ml">Audio</span></label>
+        <label class="mode-btn"><input type="radio" name="send-mode" value="qr" onchange="onModeChange('send-mode-grid',this)"><span class="mi">◾</span><span class="ml">QR CLI</span></label>
+        <label class="mode-btn"><input type="radio" name="send-mode" value="all" onchange="onModeChange('send-mode-grid',this)"><span class="mi">🌐</span><span class="ml">All</span></label>
+      </div>
+
+      <div class="adv-toggle" onclick="toggleAdv('send-adv')">⚙️ Advanced settings <span id="send-adv-arrow">▶</span></div>
+      <div class="adv-body" id="send-adv">
+        <div class="row2">
+          <div class="field"><label>Block size (visual)</label>
+            <select id="send-block"><option value="1">1 – Fast (3–5 MB/s)</option><option value="2" selected>2 – Default (1–2 MB/s)</option><option value="4">4 – Robust</option></select></div>
+          <div class="field"><label>Baud rate (audio)</label>
+            <select id="send-baud"><option value="300" selected>300 – Reliable</option><option value="600">600 – Good room</option><option value="1200">1200 – Very quiet</option></select></div>
+        </div>
+        <div class="row2">
+          <div class="field"><label>QR FPS (qr mode)</label>
+            <select id="send-fps"><option value="1">1 fps</option><option value="3" selected>3 fps – Default</option><option value="5">5 fps</option><option value="10">10 fps</option></select></div>
+          <div class="field"><label>ACK camera index (-1 = off)</label>
+            <input type="number" id="send-ack-cam" value="-1" min="-1" max="9"/></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="btn-row">
+        <button class="btn btn-success" id="send-start-btn" onclick="startSend()">▶ Start Sending</button>
+        <button class="btn btn-danger" id="send-stop-btn" onclick="stopJob('send')" disabled>⏹ Stop</button>
+        <span class="badge idle" id="send-badge"><span class="pulse" style="display:none"></span> Idle</span>
+      </div>
+      <div class="progress-bar" id="send-pbar" style="display:none"><div class="progress-fill" id="send-pfill"></div></div>
+    </div>
+
+    <div class="card">
+      <div class="console-header">
+        <span>📟 Output Log</span>
+        <button class="clear-btn" onclick="clearLog('send-console')">Clear</button>
+      </div>
+      <div class="console" id="send-console">Waiting to start…</div>
+    </div>
+  </div><!-- /tab-send -->
+
+
+  <!-- ══════════════════════════════════════════════════════════════════════
+       TAB: RECEIVE
+  ═══════════════════════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-receive">
+    <p class="section-title">Receive File</p>
+    <p class="section-sub">Open your camera / microphone to capture incoming data.</p>
+
+    <div class="card">
+      <h3>Output</h3>
+      <div class="field">
+        <label>Save as filename</label>
+        <input type="text" id="recv-output" placeholder="e.g. myfile.zip" value="received_file"/>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Transport Mode</h3>
+      <div class="mode-grid" id="recv-mode-grid">
+        <label class="mode-btn selected"><input type="radio" name="recv-mode" value="visual" checked onchange="onModeChange('recv-mode-grid',this)"><span class="mi">🖥️</span><span class="ml">Visual</span></label>
+        <label class="mode-btn"><input type="radio" name="recv-mode" value="audio" onchange="onModeChange('recv-mode-grid',this)"><span class="mi">🔊</span><span class="ml">Audio</span></label>
+        <label class="mode-btn"><input type="radio" name="recv-mode" value="qr" onchange="onModeChange('recv-mode-grid',this)"><span class="mi">◾</span><span class="ml">QR CLI</span></label>
+      </div>
+
+      <div class="adv-toggle" onclick="toggleAdv('recv-adv')">⚙️ Advanced settings <span id="recv-adv-arrow">▶</span></div>
+      <div class="adv-body" id="recv-adv">
+        <div class="row2">
+          <div class="field"><label>Camera index (visual / qr)</label>
+            <input type="number" id="recv-cam" value="0" min="0" max="9"/></div>
+          <div class="field"><label>Block size (must match sender)</label>
+            <select id="recv-block"><option value="1">1</option><option value="2" selected>2</option><option value="4">4</option></select></div>
+        </div>
+        <div class="row2">
+          <div class="field"><label>Baud rate (audio)</label>
+            <select id="recv-baud"><option value="300" selected>300</option><option value="600">600</option><option value="1200">1200</option></select></div>
+          <div class="field"><label>Timeout (seconds)</label>
+            <input type="number" id="recv-timeout" value="7200" min="60"/></div>
+        </div>
+        <div class="field">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="recv-no-ack"/> Disable ACK window (headless)
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="btn-row">
+        <button class="btn btn-success" id="recv-start-btn" onclick="startReceive()">▶ Start Receiving</button>
+        <button class="btn btn-danger" id="recv-stop-btn" onclick="stopJob('receive')" disabled>⏹ Stop</button>
+        <button class="btn btn-primary" id="recv-dl-btn" onclick="downloadReceived()" disabled style="display:none">⬇ Download</button>
+        <span class="badge idle" id="recv-badge"><span class="pulse" style="display:none"></span> Idle</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="console-header">
+        <span>📟 Output Log</span>
+        <button class="clear-btn" onclick="clearLog('recv-console')">Clear</button>
+      </div>
+      <div class="console" id="recv-console">Waiting to start…</div>
+    </div>
+  </div><!-- /tab-receive -->
+
+
+  <!-- ══════════════════════════════════════════════════════════════════════
+       TAB: QR TRANSFER  (browser-native, no OpenCV needed)
+  ═══════════════════════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-qr">
+    <p class="section-title">QR Web Transfer</p>
+    <p class="section-sub">Send files to your phone without the CLI. Laptop displays QR codes → phone scans → file assembled on phone.</p>
+
+    <!-- Step 1: Pick file -->
+    <div class="card" id="qr-step1">
+      <h3>Step 1 — Select File</h3>
+      <div class="dropzone" id="qr-dz" ondragover="dzDrag(event,'qr-dz')"
+           ondragleave="dzLeave('qr-dz')" ondrop="dzDrop(event,'qr-dz','qr-file-input')">
+        <div class="dz-icon">📁</div>
+        <p class="dz-text"><strong>Click or drag</strong> a file here</p>
+        <p class="dz-file" id="qr-file-name">No file selected</p>
+        <input type="file" id="qr-file-input" onchange="onFileSelect(this,'qr-file-name','qr-file-path')"/>
+      </div>
+      <input type="hidden" id="qr-file-path"/>
+      <div class="btn-row" style="margin-top:14px">
+        <button class="btn btn-primary" id="qr-start-btn" onclick="startQRSession()">🚀 Generate QR Frames</button>
+        <span id="qr-gen-status" style="font-size:13px;color:var(--muted)"></span>
+      </div>
+    </div>
+
+    <!-- Step 2: Display QR + Phone connect (shown after session starts) -->
+    <div id="qr-step2" style="display:none">
+      <div class="qr-layout">
+
+        <!-- Left: QR display -->
+        <div class="card" style="padding:16px">
+          <h3>Laptop Display</h3>
+          <div class="qr-display-box">
+            <div class="qr-img-wrap">
+              <img id="qr-frame-img" src="" alt="QR Frame" style="display:none"/>
+              <span id="qr-placeholder" style="color:var(--muted);font-size:13px">Generating frames…</span>
+            </div>
+            <div class="qr-counter">
+              Frame <strong id="qr-cur-frame">0</strong> / <strong id="qr-tot-frames">?</strong>
+              &nbsp;·&nbsp; <span id="qr-pct">0%</span> scanned by phone
+            </div>
+            <div class="progress-bar" style="width:100%;margin:0">
+              <div class="progress-fill" id="qr-pfill"></div>
+            </div>
+            <div class="qr-speed">
+              <label>Speed</label>
+              <input type="range" id="qr-hold-ms" min="300" max="5000" step="100" value="1500" oninput="updateQRSpeed(this)"/>
+              <span id="qr-speed-label" style="font-size:12px;color:var(--muted)">1.5s/frame</span>
+            </div>
+            <div class="btn-row" style="justify-content:center">
+              <button class="btn btn-ghost" onclick="qrPrev()" title="Previous frame">◀</button>
+              <button class="btn btn-ghost" id="qr-pause-btn" onclick="toggleQRPause()">⏸ Pause</button>
+              <button class="btn btn-ghost" onclick="qrNext()" title="Next frame">▶</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Phone connect -->
+        <div class="card" style="padding:16px">
+          <h3>📱 Open on Phone</h3>
+          <div class="phone-card">
+            <p style="font-size:13px;color:var(--muted);text-align:center">
+              Scan this QR with your phone camera to open the scanner:
+            </p>
+            <div class="connect-qr">
+              <img id="connect-qr-img" src="" alt="Scanner URL QR" style="width:140px;height:140px"/>
+            </div>
+            <p style="font-size:11px;color:var(--muted)">— or type the URL manually —</p>
+            <div class="phone-url-box" id="scanner-url-box">Loading…</div>
+            <button class="btn btn-ghost" onclick="openScanner()" style="width:100%">
+              📷 Open Scanner on This Device
+            </button>
+          </div>
+          <hr/>
+          <div style="font-size:12px;color:var(--muted)">
+            <p style="margin-bottom:6px"><strong style="color:var(--text)">Requirements:</strong></p>
+            <p>• Chrome on Android (v83+)</p>
+            <p>• Same WiFi network as laptop</p>
+            <p>• Run <code style="color:var(--primary)">python app.py --https</code> for camera access</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="btn-row">
+          <button class="btn btn-danger" onclick="stopQRSession()">⏹ Stop QR Session</button>
+          <span id="qr-status-badge" class="badge running"><span class="pulse"></span> Running</span>
+          <span style="font-size:13px;color:var(--muted)" id="qr-acked-label">0 frames scanned by phone</span>
+        </div>
+      </div>
+    </div>
+  </div><!-- /tab-qr -->
+
+
+  <!-- ══════════════════════════════════════════════════════════════════════
+       TAB: VALIDATE
+  ═══════════════════════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-validate">
+    <p class="section-title">Validate Transfer</p>
+    <p class="section-sub">Compare original and received files to verify zero data loss.</p>
+
+    <div class="card">
+      <div class="row2">
+        <div>
+          <h3>Original File</h3>
+          <div class="dropzone" id="val-orig-dz" ondragover="dzDrag(event,'val-orig-dz')"
+               ondragleave="dzLeave('val-orig-dz')" ondrop="dzDrop(event,'val-orig-dz','val-orig-input',true)">
+            <div class="dz-icon">📄</div>
+            <p class="dz-text"><strong>Click</strong> to select original</p>
+            <p class="dz-file" id="val-orig-name">No file selected</p>
+            <input type="file" id="val-orig-input" onchange="val_onFile(this,'orig')"/>
+          </div>
+        </div>
+        <div>
+          <h3>Received File</h3>
+          <div class="dropzone" id="val-recv-dz" ondragover="dzDrag(event,'val-recv-dz')"
+               ondragleave="dzLeave('val-recv-dz')" ondrop="dzDrop(event,'val-recv-dz','val-recv-input',true)">
+            <div class="dz-icon">📥</div>
+            <p class="dz-text"><strong>Click</strong> to select received</p>
+            <p class="dz-file" id="val-recv-name">No file selected</p>
+            <input type="file" id="val-recv-input" onchange="val_onFile(this,'recv')"/>
+          </div>
+        </div>
+      </div>
+      <div class="btn-row" style="margin-top:14px">
+        <button class="btn btn-primary" id="val-btn" onclick="runValidate()">🔍 Compare Files</button>
+        <span id="val-status" style="font-size:13px;color:var(--muted)"></span>
+      </div>
+    </div>
+
+    <div id="val-result" style="display:none"></div>
+  </div><!-- /tab-validate -->
+
+  </main>
+</div><!-- /#app -->
+
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     SCANNER VIEW  (fullscreen phone QR scanner)
+══════════════════════════════════════════════════════════════════════════ -->
+<div id="scanner-view">
+  <div class="scanner-header">
+    <span style="font-size:22px">🌀</span>
+    <h2>MARICHI Scanner</h2>
+    <button class="close-btn" onclick="closeScanner()">✕</button>
+  </div>
+
+  <div class="scanner-video-wrap">
+    <video id="scanner-video" autoplay playsinline muted></video>
+    <div class="scanner-overlay">
+      <div class="scan-box"></div>
+    </div>
+  </div>
+
+  <div class="scanner-status">
+    <div id="scan-info" style="font-size:13px;color:var(--muted)">Point camera at QR codes on laptop screen</div>
+    <div id="scan-count" style="font-size:26px;font-weight:700;color:var(--primary)">0</div>
+    <div id="scan-total" style="font-size:14px;color:var(--muted)">frames scanned</div>
+    <div class="progress-bar"><div class="progress-fill" id="scan-pfill"></div></div>
+    <button class="btn btn-success" id="scan-done-btn" onclick="scannerDownload()" style="display:none">
+      ⬇ Download File
+    </button>
+    <div id="scan-hash" style="font-size:11px;color:var(--muted);margin-top:8px;word-break:break-all"></div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     JAVASCRIPT
+══════════════════════════════════════════════════════════════════════════ -->
+<script>
+// ── Init ─────────────────────────────────────────────────────────────────────
+const IS_SCANNER = {{ 'true' if scanner else 'false' }};
+
+// State
+const state = {
+  send:    { jobId: null, es: null },
+  receive: { jobId: null, es: null },
+  qr:      { sessionId: null, curFrame: 0, total: 0, holdMs: 1500, paused: false, timer: null, acked: 0 },
+  scanner: { stream: null, frames: new Map(), total: 0, sid: null, name: 'received', rafId: null },
+};
+
+// Network info
+let netInfo = { url: '', scanner_url: '', ip: '' };
+
+async function initNetInfo() {
+  try {
+    const r = await fetch('/api/info');
+    netInfo = await r.json();
+    document.getElementById('net-badge').textContent = `📡 ${netInfo.ip}:${netInfo.port || 5000}`;
+    document.getElementById('scanner-url-box').textContent = netInfo.scanner_url;
+    // Generate connect QR code (QR of scanner URL)
+    generateConnectQR(netInfo.scanner_url);
+  } catch(e) {
+    document.getElementById('net-badge').textContent = 'localhost';
+  }
+}
+
+// ── Tab switching ─────────────────────────────────────────────────────────────
+function showTab(name, btn) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tabnav button').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  if (btn) btn.classList.add('active');
+}
+
+// ── Dropzone ──────────────────────────────────────────────────────────────────
+function dzDrag(e, id) {
+  e.preventDefault();
+  document.getElementById(id).classList.add('drag-over');
+}
+function dzLeave(id) {
+  document.getElementById(id).classList.remove('drag-over');
+}
+function dzDrop(e, dzId, inputId, direct) {
+  e.preventDefault();
+  dzLeave(dzId);
+  const file = e.dataTransfer.files[0];
+  if (!file) return;
+  const inp = document.getElementById(inputId);
+  // Simulate file selection via DataTransfer
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  inp.files = dt.files;
+  inp.dispatchEvent(new Event('change'));
+}
+
+// ── File select & upload ──────────────────────────────────────────────────────
+async function onFileSelect(input, nameId, pathId) {
+  const file = input.files[0];
+  if (!file) return;
+  document.getElementById(nameId).textContent = `${file.name} (${fmtBytes(file.size)})`;
+
+  const fd = new FormData();
+  fd.append('file', file);
+  toast('Uploading…');
+  try {
+    const r = await fetch('/api/upload', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (d.path) {
+      document.getElementById(pathId).value = d.path;
+      toast(`✅ Uploaded: ${d.filename}`);
+    } else {
+      toast('❌ Upload failed: ' + (d.error || 'unknown'));
+    }
+  } catch(e) {
+    toast('❌ Upload error: ' + e.message);
+  }
+}
+
+// ── Mode selector ─────────────────────────────────────────────────────────────
+function onModeChange(gridId, radio) {
+  document.querySelectorAll(`#${gridId} .mode-btn`).forEach(b => b.classList.remove('selected'));
+  radio.closest('.mode-btn').classList.add('selected');
+}
+
+// ── Advanced toggle ───────────────────────────────────────────────────────────
+function toggleAdv(id) {
+  const body  = document.getElementById(id);
+  const arrow = document.getElementById(id + '-arrow');
+  const open  = body.classList.toggle('open');
+  arrow.textContent = open ? '▼' : '▶';
+}
+
+// ── SEND ──────────────────────────────────────────────────────────────────────
+async function startSend() {
+  const path = document.getElementById('send-file-path').value;
+  if (!path) { toast('⚠️ Please select a file first'); return; }
+
+  const mode = document.querySelector('input[name="send-mode"]:checked')?.value || 'visual';
+  const body = {
+    path, mode,
+    block:   parseInt(document.getElementById('send-block').value),
+    baud:    parseInt(document.getElementById('send-baud').value),
+    fps:     parseInt(document.getElementById('send-fps').value),
+    ack_cam: parseInt(document.getElementById('send-ack-cam').value),
+    hold:    80,
+  };
+
+  setBadge('send', 'running');
+  setLog('send-console', '');
+  appendLog('send-console', `▶ Starting [${mode}] mode…`);
+  document.getElementById('send-start-btn').disabled = true;
+  document.getElementById('send-stop-btn').disabled  = false;
+
+  try {
+    const r  = await fetch('/api/send', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const d  = await r.json();
+    if (!d.job_id) throw new Error(d.error || 'Failed to start');
+    state.send.jobId = d.job_id;
+    streamLogs(d.job_id, 'send-console', 'send');
+  } catch(e) {
+    toast('❌ ' + e.message);
+    setBadge('send', 'error');
+    document.getElementById('send-start-btn').disabled = false;
+    document.getElementById('send-stop-btn').disabled  = true;
+  }
+}
+
+// ── RECEIVE ───────────────────────────────────────────────────────────────────
+async function startReceive() {
+  const mode    = document.querySelector('input[name="recv-mode"]:checked')?.value || 'visual';
+  const outname = document.getElementById('recv-output').value.trim() || 'received_file';
+  const body = {
+    mode, output: outname,
+    cam:     parseInt(document.getElementById('recv-cam').value),
+    block:   parseInt(document.getElementById('recv-block').value),
+    baud:    parseInt(document.getElementById('recv-baud').value),
+    timeout: parseInt(document.getElementById('recv-timeout').value),
+    no_ack:  document.getElementById('recv-no-ack').checked,
+  };
+
+  setBadge('receive', 'running');
+  setLog('recv-console', '');
+  appendLog('recv-console', `▶ Starting receive [${mode}] → ${outname}…`);
+  document.getElementById('recv-start-btn').disabled = true;
+  document.getElementById('recv-stop-btn').disabled  = false;
+  document.getElementById('recv-dl-btn').style.display = 'none';
+
+  try {
+    const r = await fetch('/api/receive', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const d = await r.json();
+    if (!d.job_id) throw new Error(d.error || 'Failed to start');
+    state.receive.jobId = d.job_id;
+    streamLogs(d.job_id, 'recv-console', 'receive');
+  } catch(e) {
+    toast('❌ ' + e.message);
+    setBadge('receive', 'error');
+    document.getElementById('recv-start-btn').disabled = false;
+    document.getElementById('recv-stop-btn').disabled  = true;
+  }
+}
+
+function downloadReceived() {
+  window.location = `/api/download/${state.receive.jobId}`;
+}
+
+// ── SSE log streaming ─────────────────────────────────────────────────────────
+function streamLogs(jobId, consoleId, tab) {
+  const es = new EventSource(`/api/stream/${jobId}`);
+  if (tab === 'send')    state.send.es    = es;
+  if (tab === 'receive') state.receive.es = es;
+
+  es.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.t === 'log') {
+      appendLog(consoleId, msg.msg);
+    } else if (msg.t === 'exit') {
+      es.close();
+      const ok = msg.code === 0;
+      setBadge(tab, ok ? 'done' : 'error');
+      appendLog(consoleId, ok ? '\n✅ Done!' : `\n❌ Exited with code ${msg.code}`);
+      if (tab === 'send') {
+        document.getElementById('send-start-btn').disabled = false;
+        document.getElementById('send-stop-btn').disabled  = true;
+      }
+      if (tab === 'receive') {
+        document.getElementById('recv-start-btn').disabled = false;
+        document.getElementById('recv-stop-btn').disabled  = true;
+        if (ok) {
+          const dl = document.getElementById('recv-dl-btn');
+          dl.style.display = '';
+          dl.disabled = false;
+        }
+      }
+    }
+  };
+  es.onerror = () => {
+    es.close();
+    setBadge(tab, 'error');
+    appendLog(consoleId, '\n⚠️ Connection lost.');
+  };
+}
+
+async function stopJob(tab) {
+  const jobId = tab === 'send' ? state.send.jobId : state.receive.jobId;
+  if (!jobId) return;
+  await fetch(`/api/stop/${jobId}`, { method: 'POST' });
+  setBadge(tab, 'stopped');
+  if (tab === 'send') {
+    document.getElementById('send-start-btn').disabled = false;
+    document.getElementById('send-stop-btn').disabled  = true;
+  } else {
+    document.getElementById('recv-start-btn').disabled = false;
+    document.getElementById('recv-stop-btn').disabled  = true;
+  }
+}
+
+// ── QR Web Transfer ───────────────────────────────────────────────────────────
+async function startQRSession() {
+  const path = document.getElementById('qr-file-path').value;
+  if (!path) { toast('⚠️ Select a file first'); return; }
+
+  const btn = document.getElementById('qr-start-btn');
+  btn.disabled = true;
+  document.getElementById('qr-gen-status').textContent = 'Generating QR session…';
+
+  try {
+    const r = await fetch('/api/qr/start', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ path })
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+
+    state.qr.sessionId = d.session_id;
+    state.qr.total     = d.total;
+    state.qr.curFrame  = 0;
+    state.qr.acked     = 0;
+    state.qr.paused    = false;
+
+    document.getElementById('qr-tot-frames').textContent = d.total;
+    document.getElementById('qr-gen-status').textContent = '';
+    document.getElementById('qr-step2').style.display = '';
+    document.getElementById('scanner-url-box').textContent = netInfo.scanner_url + '?s=' + d.session_id;
+
+    toast(`✅ QR session ready — ${d.total} frames`);
+    qrShowFrame(0);
+    qrStartLoop();
+  } catch(e) {
+    toast('❌ ' + e.message);
+    btn.disabled = false;
+    document.getElementById('qr-gen-status').textContent = '';
+  }
+}
+
+function qrShowFrame(n) {
+  const sid = state.qr.sessionId;
+  if (!sid) return;
+  const img = document.getElementById('qr-frame-img');
+  const ph  = document.getElementById('qr-placeholder');
+  img.style.display = '';
+  ph.style.display  = 'none';
+  img.src = `/api/qr/frame/${sid}/${n}?t=${Date.now()}`;
+  document.getElementById('qr-cur-frame').textContent = n + 1;
+}
+
+function qrStartLoop() {
+  clearTimeout(state.qr.timer);
+  if (state.qr.paused) return;
+  const advance = () => {
+    if (state.qr.paused || !state.qr.sessionId) return;
+    let next = (state.qr.curFrame + 1) % state.qr.total;
+    // Skip already-acked frames
+    let tries = 0;
+    while (state.qr.ackedSet && state.qr.ackedSet.has(next) && tries++ < state.qr.total) {
+      next = (next + 1) % state.qr.total;
+    }
+    state.qr.curFrame = next;
+    qrShowFrame(next);
+    state.qr.timer = setTimeout(advance, state.qr.holdMs);
+  };
+  state.qr.timer = setTimeout(advance, state.qr.holdMs);
+  // Poll status for acks
+  qrPollStatus();
+}
+
+async function qrPollStatus() {
+  if (!state.qr.sessionId) return;
+  try {
+    const r = await fetch(`/api/qr/status/${state.qr.sessionId}`);
+    const d = await r.json();
+    state.qr.acked     = d.acked || 0;
+    state.qr.ackedSet  = new Set(); // simplified: just track count
+    const pct = state.qr.total > 0 ? (d.acked / state.qr.total * 100) : 0;
+    document.getElementById('qr-pfill').style.width = pct + '%';
+    document.getElementById('qr-pct').textContent = Math.round(pct) + '%';
+    document.getElementById('qr-acked-label').textContent = `${d.acked} / ${d.total} frames scanned by phone`;
+
+    if (d.done) {
+      document.getElementById('qr-status-badge').className = 'badge done';
+      document.getElementById('qr-status-badge').innerHTML = '✅ Complete';
+      stopQRSession();
+      toast('🎉 All frames received by phone!');
+      return;
+    }
+  } catch(e) {}
+  if (state.qr.sessionId) setTimeout(qrPollStatus, 1500);
+}
+
+function qrPrev() {
+  state.qr.curFrame = Math.max(0, state.qr.curFrame - 1);
+  qrShowFrame(state.qr.curFrame);
+}
+function qrNext() {
+  state.qr.curFrame = Math.min(state.qr.total - 1, state.qr.curFrame + 1);
+  qrShowFrame(state.qr.curFrame);
+}
+function toggleQRPause() {
+  state.qr.paused = !state.qr.paused;
+  document.getElementById('qr-pause-btn').textContent = state.qr.paused ? '▶ Resume' : '⏸ Pause';
+  if (!state.qr.paused) qrStartLoop();
+}
+function updateQRSpeed(input) {
+  state.qr.holdMs = parseInt(input.value);
+  document.getElementById('qr-speed-label').textContent = (state.qr.holdMs / 1000).toFixed(1) + 's/frame';
+}
+function stopQRSession() {
+  clearTimeout(state.qr.timer);
+  state.qr.sessionId = null;
+}
+
+// ── Generate connect QR (QR of the scanner URL) ───────────────────────────────
+async function generateConnectQR(url) {
+  // Use server to generate the QR code image for the scanner URL
+  try {
+    const r = await fetch('/api/qr/start', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ path: '__url__:' + url })
+    });
+    // This won't work for URL — we just display the text URL prominently instead
+  } catch(e) {}
+  // Use the text URL directly as fallback
+  document.getElementById('connect-qr-img').style.display = 'none';
+}
+
+// ── Scanner (phone side) ──────────────────────────────────────────────────────
+let scannerActive = false;
+
+function openScanner() {
+  document.getElementById('scanner-view').classList.add('active');
+  startScannerCamera();
+}
+
+function closeScanner() {
+  document.getElementById('scanner-view').classList.remove('active');
+  stopScannerCamera();
+}
+
+async function startScannerCamera() {
+  if (!('BarcodeDetector' in window)) {
+    document.getElementById('scan-info').textContent =
+      '⚠️ BarcodeDetector not supported. Use Chrome on Android, or run with --https.';
+    return;
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
+    });
+    state.scanner.stream = stream;
+    const video = document.getElementById('scanner-video');
+    video.srcObject = stream;
+    await video.play();
+    scannerActive = true;
+    document.getElementById('scan-info').textContent = 'Scanning… aim at QR codes on laptop screen';
+    scanLoop();
+  } catch(e) {
+    document.getElementById('scan-info').textContent = '❌ Camera error: ' + e.message +
+      (location.protocol !== 'https:' ? ' — run app.py --https for camera access' : '');
+  }
+}
+
+function stopScannerCamera() {
+  scannerActive = false;
+  if (state.scanner.rafId) cancelAnimationFrame(state.scanner.rafId);
+  if (state.scanner.stream) {
+    state.scanner.stream.getTracks().forEach(t => t.stop());
+    state.scanner.stream = null;
+  }
+}
+
+const _barcodeDetector = ('BarcodeDetector' in window)
+  ? new BarcodeDetector({ formats: ['qr_code'] }) : null;
+
+async function scanLoop() {
+  if (!scannerActive) return;
+  const video = document.getElementById('scanner-video');
+
+  if (video.readyState >= 2 && _barcodeDetector) {
+    try {
+      const results = await _barcodeDetector.detect(video);
+      for (const r of results) {
+        if (processQRData(r.rawValue)) break;
+      }
+    } catch(e) {}
+  }
+  state.scanner.rafId = requestAnimationFrame(scanLoop);
+}
+
+// Parse & store scanned QR frame data
+function processQRData(raw) {
+  if (!raw || !raw.startsWith('MRCH1|')) return false;
+  const parts = raw.split('|');
+  if (parts.length < 6) return false;
+
+  const [, sid, frameNoStr, totalStr, crcHex, b64Payload] = parts;
+  const frameNo = parseInt(frameNoStr);
+  const total   = parseInt(totalStr);
+  if (isNaN(frameNo) || isNaN(total)) return false;
+
+  // Init session
+  if (!state.scanner.sid) {
+    state.scanner.sid   = sid;
+    state.scanner.total = total;
+    state.scanner.name  = 'received_file';
+  }
+
+  if (state.scanner.frames.has(frameNo)) return true; // duplicate
+
+  // Decode base64 payload
+  try {
+    const bytes = base64ToBytes(b64Payload);
+    state.scanner.frames.set(frameNo, bytes);
+  } catch(e) { return false; }
+
+  // Update UI
+  const count = state.scanner.frames.size;
+  document.getElementById('scan-count').textContent = count;
+  document.getElementById('scan-total').textContent = `/ ${total} frames`;
+  const pct = total > 0 ? (count / total * 100) : 0;
+  document.getElementById('scan-pfill').style.width = pct + '%';
+  document.getElementById('scan-info').textContent  = `${count} / ${total} frames (${Math.round(pct)}%)`;
+
+  // Report ack to server (for laptop display advancement)
+  reportAck(sid, frameNo);
+
+  // Done?
+  if (count >= total) {
+    document.getElementById('scan-done-btn').style.display = '';
+    document.getElementById('scan-info').textContent = '🎉 All frames received!';
+    stopScannerCamera();
+  }
+  return true;
+}
+
+async function reportAck(sid, frameNo) {
+  try {
+    await fetch('/api/qr/ack', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ session_id: sid, frame_no: frameNo })
+    });
+  } catch(e) {}
+}
+
+function scannerDownload() {
+  const frames = state.scanner.frames;
+  const total  = state.scanner.total;
+
+  // Assemble all frames in order
+  let size = 0;
+  for (let i = 0; i < total; i++) size += (frames.get(i)?.length || 0);
+  const buf = new Uint8Array(size);
+  let off = 0;
+  for (let i = 0; i < total; i++) {
+    const f = frames.get(i);
+    if (f) { buf.set(f, off); off += f.length; }
+  }
+
+  const blob = new Blob([buf]);
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = state.scanner.name || 'received_file';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+// Base64 → Uint8Array
+function base64ToBytes(b64) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+// ── Validate ──────────────────────────────────────────────────────────────────
+const valFiles = { orig: null, recv: null };
+
+function val_onFile(input, which) {
+  const file = input.files[0];
+  if (!file) return;
+  valFiles[which] = file;
+  document.getElementById(`val-${which}-name`).textContent = `${file.name} (${fmtBytes(file.size)})`;
+}
+
+async function runValidate() {
+  if (!valFiles.orig || !valFiles.recv) { toast('⚠️ Select both files'); return; }
+  const btn = document.getElementById('val-btn');
+  btn.disabled = true;
+  document.getElementById('val-status').textContent = 'Comparing…';
+
+  const fd = new FormData();
+  fd.append('original', valFiles.orig);
+  fd.append('received', valFiles.recv);
+
+  try {
+    const r = await fetch('/api/validate', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    showValidateResult(d);
+    document.getElementById('val-status').textContent = '';
+  } catch(e) {
+    toast('❌ ' + e.message);
+    document.getElementById('val-status').textContent = '';
+  }
+  btn.disabled = false;
+}
+
+function showValidateResult(d) {
+  const icons = { PERFECT:'🟢', DEGRADED:'🟡', CORRUPT:'🔴', SIZE_MISMATCH:'🔴' };
+  const icon  = icons[d.verdict] || '⚪';
+  const div   = document.getElementById('val-result');
+  div.style.display = '';
+  div.innerHTML = `
+    <div class="verdict-card ${d.verdict}">
+      <div class="verdict-icon">${icon}</div>
+      <div class="verdict-label">${d.verdict}</div>
+      <div class="stats-grid">
+        <div class="stat-item"><div class="sk">Original size</div><div class="sv">${fmtBytes(d.orig_size)}</div></div>
+        <div class="stat-item"><div class="sk">Received size</div><div class="sv">${fmtBytes(d.recv_size)}</div></div>
+        <div class="stat-item"><div class="sk">Byte differences</div><div class="sv">${d.byte_diffs.toLocaleString()}</div></div>
+        <div class="stat-item"><div class="sk">SHA-256 match</div><div class="sv">${d.sha_match ? '✅ Yes' : '❌ No'}</div></div>
+        <div class="stat-item" style="grid-column:1/-1"><div class="sk">Original SHA-256</div><div class="sv" style="font-size:11px">${d.sha_orig}</div></div>
+        <div class="stat-item" style="grid-column:1/-1"><div class="sk">Received SHA-256</div><div class="sv" style="font-size:11px">${d.sha_recv}</div></div>
+      </div>
+    </div>`;
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function setBadge(tab, status) {
+  const id  = tab === 'send' ? 'send-badge' : 'recv-badge';
+  const el  = document.getElementById(id);
+  const labels = { idle:'Idle', running:'Running', done:'Done', error:'Error', stopped:'Stopped' };
+  const pulse  = status === 'running';
+  el.className = `badge ${status}`;
+  el.innerHTML = (pulse ? '<span class="pulse"></span> ' : '') + (labels[status] || status);
+}
+
+function appendLog(id, text) {
+  const el = document.getElementById(id);
+  const isBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
+  const line = document.createElement('div');
+  // Colour-code lines
+  if (text.includes('ERROR') || text.includes('Traceback') || text.includes('❌'))
+    line.className = 'err';
+  else if (text.includes('⚠️') || text.includes('NACK'))
+    line.className = 'warn';
+  line.textContent = text;
+  el.appendChild(line);
+  if (isBottom) el.scrollTop = el.scrollHeight;
+}
+function setLog(id, text) {
+  document.getElementById(id).innerHTML = '';
+  if (text) appendLog(id, text);
+}
+function clearLog(id) { document.getElementById(id).innerHTML = ''; }
+
+function copyScanner() {
+  if (netInfo.scanner_url) {
+    navigator.clipboard?.writeText(netInfo.scanner_url);
+    toast('📋 Scanner URL copied!');
+  }
+}
+
+function fmtBytes(b) {
+  if (!b) return '0 B';
+  if (b < 1024) return b + ' B';
+  if (b < 1024**2) return (b/1024).toFixed(1) + ' KB';
+  if (b < 1024**3) return (b/1024**2).toFixed(2) + ' MB';
+  return (b/1024**3).toFixed(2) + ' GB';
+}
+
+let _toastTimer = null;
+function toast(msg, dur = 2800) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => el.classList.remove('show'), dur);
+}
+
+// ── Scanner URL param (phone opens /scanner?s=<session_id>) ──────────────────
+function checkScannerParam() {
+  const params = new URLSearchParams(location.search);
+  const sid    = params.get('s');
+  if (sid) {
+    state.scanner.sid   = sid;
+    // Fetch session info
+    fetch(`/api/qr/status/${sid}`)
+      .then(r => r.json())
+      .then(d => {
+        state.scanner.total = d.total;
+        state.scanner.name  = d.name || 'received_file';
+        document.getElementById('scan-total').textContent = `/ ${d.total} frames`;
+      }).catch(() => {});
+  }
+}
+
+// ── Startup ───────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  initNetInfo();
+  checkScannerParam();
+
+  if (IS_SCANNER) {
+    // Phone landed directly on /scanner — show scanner fullscreen immediately
+    document.getElementById('main-tabnav').style.display = 'none';
+    document.getElementById('app').style.display = 'none';
+    openScanner();
+  }
+});
+
+// Service worker registration
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/static/sw.js').catch(() => {});
+}
+</script>
+</body>
+</html>

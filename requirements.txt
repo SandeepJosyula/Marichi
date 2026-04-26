@@ -1,6 +1,10 @@
 # MARICHI (मरीचि) — dependencies for all transport modes
 # Install outside Walmart network (pypi.org blocked on corporate WiFi)
 
+# ── Web UI (app.py) ─────────────────────────────────────────────────────────
+flask>=3.0.0             # web server for browser UI
+pyopenssl>=24.0.0        # needed for --https (phone camera access)
+
 # ── Core (required for all modes) ──────────────────────────────────────────
 numpy>=1.24.0
 reedsolo>=1.7.0
