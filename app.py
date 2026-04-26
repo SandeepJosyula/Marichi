@@ -1,41 +1,24 @@
 #!/usr/bin/env python3
 """
-MARICHI Web UI  v1.0
-A browser-based control panel + QR web transfer for MARICHI.
+MARICHI Web UI  v1.0  —  pure Python stdlib (no Flask required)
 
-Run (HTTP – laptop only):
-    python app.py
+Run:
+    python app.py                  # HTTP  – laptop only
+    python app.py --https          # HTTPS – needed for phone camera (uses openssl CLI)
+    python app.py --port 8080      # custom port
 
-Run (HTTPS – needed for phone camera):
-    python app.py --https        # self-signed cert (accept warning on phone once)
-
-Then open:
+Open:
     Laptop  →  http://localhost:5000
     Android →  http://<laptop-ip>:5000
     Scanner →  http://<laptop-ip>:5000/scanner
 """
 from __future__ import annotations
-
-import argparse
-import base64
-import hashlib
-import io
-import json
-import math
-import os
-import secrets
-import socket
-import struct
-import subprocess
-import sys
-import threading
-import time
-import uuid
-import zlib
+import argparse, base64, hashlib, io, json, math, mimetypes
+import os, re, secrets, socket, ssl, struct, subprocess, sys, threading
+import time, uuid, zlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from queue import Empty, Queue
-
-from flask import Flask, Response, jsonify, render_template, request, send_file, stream_with_context
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 PROJECT_DIR = Path(__file__).parent
@@ -45,43 +28,29 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 sys.path.insert(0, str(PROJECT_DIR))
 
-# ── Flask ──────────────────────────────────────────────────────────────────────
-app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024 * 1024   # 2 GB
-
-_PORT = 5000
-
+_PORT      = 5000
+_USE_HTTPS = False
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  JOB MANAGER  (subprocess-based for visual / audio / qr CLI modes)
+#  JOB MANAGER
 # ══════════════════════════════════════════════════════════════════════════════
-
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 
-
 def _new_job() -> tuple[str, dict]:
     jid = uuid.uuid4().hex[:12]
-    job = {
-        'process':     None,
-        'log_q':       Queue(),
-        'status':      'starting',
-        'output_file': None,
-        't0':          time.time(),
-    }
+    job = {'process': None, 'log_q': Queue(), 'status': 'starting',
+           'output_file': None, 't0': time.time()}
     with _jobs_lock:
         _jobs[jid] = job
     return jid, job
 
-
-def _run_subprocess(job: dict, cmd: list[str], cwd: str) -> None:
-    """Run cmd, push each stdout line into job['log_q'], then push __DONE__."""
+def _run_subprocess(job: dict, cmd: list, cwd: str) -> None:
     try:
         env  = {**os.environ, 'PYTHONUNBUFFERED': '1'}
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1, cwd=cwd, env=env,
-        )
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT,
+                                text=True, bufsize=1, cwd=cwd, env=env)
         job['process'] = proc
         job['status']  = 'running'
         for line in proc.stdout:
@@ -96,27 +65,11 @@ def _run_subprocess(job: dict, cmd: list[str], cwd: str) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  QR WEB SESSION  (browser-native QR transfer — no OpenCV needed)
+#  QR WEB SESSION
 # ══════════════════════════════════════════════════════════════════════════════
-
-QR_WEB_CHUNK = 2048   # payload bytes per web-QR frame (base64-safe)
-
+QR_WEB_CHUNK = 2048
 
 class QRWebSession:
-    """
-    Manages a browser-native QR transfer.
-
-    Flow:
-      1.  Laptop uploads file → POST /api/qr/start → session created
-      2.  Laptop browser fetches /api/qr/frame/<sid>/<n>  (PNG image)
-      3.  Laptop browser shows frames in sequence (timer or ACK-driven)
-      4.  Phone browser (BarcodeDetector) scans each QR code
-      5.  Phone assembles file client-side and offers download
-
-    QR text format (all ASCII — BarcodeDetector compatible):
-        MRCH1|<session_hex>|<frame_no>|<total>|<crc32_HEX>|<base64_payload>
-    """
-
     def __init__(self, filepath: str):
         self.filepath   = filepath
         self.name       = os.path.basename(filepath)
@@ -128,355 +81,421 @@ class QRWebSession:
         self.total      = max(1, math.ceil(self.size / QR_WEB_CHUNK))
         self.acked: set[int] = set()
         self.done       = False
-        self._cache: dict[int, bytes] = {}   # PNG cache (last 10 frames)
+        self._cache: dict[int, bytes] = {}
         self._lock  = threading.Lock()
 
-    # ── PNG generation (on-demand, cached) ────────────────────────────────────
     def get_png(self, n: int) -> bytes:
         with self._lock:
             if n in self._cache:
                 return self._cache[n]
-
-        png = self._generate_png(n)
-
+        png = self._gen(n)
         with self._lock:
             if len(self._cache) >= 10:
-                oldest = min(self._cache)
-                del self._cache[oldest]
+                del self._cache[min(self._cache)]
             self._cache[n] = png
         return png
 
-    def _generate_png(self, n: int) -> bytes:
-        import qrcode                          # type: ignore
-        from qrcode.constants import ERROR_CORRECT_L  # type: ignore
-
+    def _gen(self, n: int) -> bytes:
+        import qrcode
+        from qrcode.constants import ERROR_CORRECT_L
         s   = n * QR_WEB_CHUNK
         e   = min(s + QR_WEB_CHUNK, self.size)
         pay = self.data[s:e]
         crc = f'{zlib.crc32(pay) & 0xFFFFFFFF:08X}'
-        b64 = base64.b64encode(pay).decode()
-        txt = f'MRCH1|{self.sid}|{n}|{self.total}|{crc}|{b64}'
-
-        qr = qrcode.QRCode(
-            version=None, error_correction=ERROR_CORRECT_L,
-            box_size=5, border=2,
-        )
-        qr.add_data(txt)
-        qr.make(fit=True)
+        txt = f'MRCH1|{self.sid}|{n}|{self.total}|{crc}|{base64.b64encode(pay).decode()}'
+        qr  = qrcode.QRCode(version=None, error_correction=ERROR_CORRECT_L,
+                            box_size=5, border=2)
+        qr.add_data(txt); qr.make(fit=True)
         img = qr.make_image(fill_color='black', back_color='white')
-
-        buf = io.BytesIO()
-        img.save(buf, format='PNG')
+        buf = io.BytesIO(); img.save(buf, format='PNG')
         return buf.getvalue()
 
-    # ── ACK (phone reports a frame received) ──────────────────────────────────
     def ack(self, n: int) -> dict:
         self.acked.add(n)
         if len(self.acked) >= self.total:
             self.done = True
-        # Compute next frame laptop should display (first gap)
         nxt = n + 1
         while nxt in self.acked and nxt < self.total:
             nxt += 1
-        return {
-            'ok':        True,
-            'acked':     len(self.acked),
-            'total':     self.total,
-            'done':      self.done,
-            'next_frame': min(nxt, self.total - 1),
-        }
+        return {'ok': True, 'acked': len(self.acked),
+                'total': self.total, 'done': self.done,
+                'next_frame': min(nxt, self.total - 1)}
 
     @property
     def progress(self) -> dict:
-        return {
-            'session_id': self.sid,
-            'name':       self.name,
-            'size':       self.size,
-            'total':      self.total,
-            'acked':      len(self.acked),
-            'done':       self.done,
-            'sha256':     self.sha256,
-        }
+        return {'session_id': self.sid, 'name': self.name, 'size': self.size,
+                'total': self.total, 'acked': len(self.acked),
+                'done': self.done, 'sha256': self.sha256}
 
-
-_qr_sessions: dict[str, QRWebSession] = {}
-
+_qr: dict[str, QRWebSession] = {}
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  UTILITIES
 # ══════════════════════════════════════════════════════════════════════════════
-
 def _my_ip() -> str:
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(('8.8.8.8', 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
+        ip = s.getsockname()[0]; s.close(); return ip
     except Exception:
         return '127.0.0.1'
 
+def _json_resp(handler, data: dict, code: int = 200) -> None:
+    body = json.dumps(data).encode()
+    handler.send_response(code)
+    handler.send_header('Content-Type', 'application/json')
+    handler.send_header('Content-Length', str(len(body)))
+    handler.send_header('Access-Control-Allow-Origin', '*')
+    handler.end_headers()
+    handler.wfile.write(body)
+
+def _read_json(handler) -> dict:
+    length = int(handler.headers.get('Content-Length', 0))
+    return json.loads(handler.rfile.read(length)) if length else {}
+
+def _read_multipart(handler) -> dict:
+    """Return dict of {field_name: (filename|None, bytes)}."""
+    ct = handler.headers.get('Content-Type', '')
+    length = int(handler.headers.get('Content-Length', 0))
+    data   = handler.rfile.read(length)
+    # Extract boundary
+    m = re.search(r'boundary=([^\s;]+)', ct)
+    if not m:
+        return {}
+    boundary = ('--' + m.group(1)).encode()
+    parts    = data.split(boundary)
+    result   = {}
+    for part in parts[1:]:
+        if part in (b'--\r\n', b'--'):
+            continue
+        part = part.lstrip(b'\r\n')
+        if b'\r\n\r\n' not in part:
+            continue
+        headers_raw, body = part.split(b'\r\n\r\n', 1)
+        body = body.rstrip(b'\r\n--')
+        hdr_text = headers_raw.decode('utf-8', errors='replace')
+        cd = re.search(r'Content-Disposition:.*?name="([^"]+)"', hdr_text)
+        fn = re.search(r'filename="([^"]*)"', hdr_text)
+        if cd:
+            name = cd.group(1)
+            result[name] = (fn.group(1) if fn else None, body)
+    return result
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  ROUTES
+#  REQUEST HANDLER
 # ══════════════════════════════════════════════════════════════════════════════
+class MarichiHandler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        pass   # silence default access log
 
-@app.route('/')
-def index():
-    return render_template('index.html', scanner=False)
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
 
+    def do_GET(self):
+        p = self.path.split('?')[0].rstrip('/')
 
-@app.route('/scanner')
-def scanner_page():
-    """Phone-optimised QR scanner view."""
-    return render_template('index.html', scanner=True)
+        if p in ('', '/'):               return self._page(False)
+        if p == '/scanner':              return self._page(True)
+        if p.startswith('/static/'):     return self._static(p[8:])
+        if p == '/api/info':             return self._api_info()
+        if p.startswith('/api/stream/'): return self._api_stream(p[13:])
+        if p.startswith('/api/status/'): return self._api_job_status(p[13:])
+        if p.startswith('/api/download/'): return self._api_download(p[15:])
 
+        m = re.match(r'/api/qr/frame/([0-9a-f]+)/(\d+)$', p)
+        if m: return self._qr_frame(m.group(1), int(m.group(2)))
 
-# ── Upload ─────────────────────────────────────────────────────────────────────
-@app.route('/api/upload', methods=['POST'])
-def api_upload():
-    f = request.files.get('file')
-    if not f or not f.filename:
-        return jsonify(error='no file'), 400
-    fid  = uuid.uuid4().hex
-    ext  = Path(f.filename).suffix
-    path = UPLOAD_DIR / f'{fid}{ext}'
-    f.save(str(path))
-    return jsonify(file_id=fid, filename=f.filename,
-                   path=str(path), size=path.stat().st_size)
+        m = re.match(r'/api/qr/status/([0-9a-f]+)$', p)
+        if m: return self._qr_status(m.group(1))
 
+        _json_resp(self, {'error': 'not found'}, 404)
 
-# ── Send ───────────────────────────────────────────────────────────────────────
-@app.route('/api/send', methods=['POST'])
-def api_send():
-    b    = request.json or {}
-    path = b.get('path', '')
-    if not os.path.exists(path):
-        return jsonify(error='file not found'), 400
+    def do_POST(self):
+        p = self.path.split('?')[0].rstrip('/')
 
-    mode    = b.get('mode', 'visual')
-    jid, job = _new_job()
+        if p == '/api/upload':       return self._api_upload()
+        if p == '/api/send':         return self._api_send()
+        if p == '/api/receive':      return self._api_receive()
+        if p == '/api/validate':     return self._api_validate()
+        if p == '/api/qr/start':     return self._qr_start()
+        if p == '/api/qr/ack':       return self._qr_ack()
 
-    cmd = [sys.executable, 'send.py', path, '--mode', mode]
-    if mode in ('visual', 'all'):
-        cmd += ['--block', str(b.get('block', 2)),
-                '--hold',  str(b.get('hold', 80))]
-        if int(b.get('ack_cam', -1)) >= 0:
-            cmd += ['--ack-cam', str(b.get('ack_cam'))]
-    if mode in ('audio', 'all'):
-        cmd += ['--baud', str(b.get('baud', 300))]
-    if mode in ('qr', 'all'):
-        cmd += ['--fps', str(b.get('fps', 3))]
+        m = re.match(r'/api/stop/([0-9a-f]+)$', p)
+        if m: return self._api_stop(m.group(1))
 
-    threading.Thread(
-        target=_run_subprocess, args=(job, cmd, str(PROJECT_DIR)), daemon=True
-    ).start()
-    return jsonify(job_id=jid)
+        _json_resp(self, {'error': 'not found'}, 404)
 
+    # ── Pages ──────────────────────────────────────────────────────────────
+    def _page(self, scanner: bool):
+        html_path = PROJECT_DIR / 'templates' / 'index.html'
+        try:
+            html = html_path.read_text(encoding='utf-8')
+            html = html.replace('%%SCANNER%%', 'true' if scanner else 'false')
+            body = html.encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as exc:
+            _json_resp(self, {'error': str(exc)}, 500)
 
-# ── Receive ────────────────────────────────────────────────────────────────────
-@app.route('/api/receive', methods=['POST'])
-def api_receive():
-    b       = request.json or {}
-    mode    = b.get('mode', 'visual')
-    outname = b.get('output', f'recv_{int(time.time())}')
-    out     = str(OUTPUT_DIR / outname)
+    # ── Static files ───────────────────────────────────────────────────────
+    def _static(self, filename: str):
+        path = PROJECT_DIR / 'static' / filename
+        if not path.exists():
+            _json_resp(self, {'error': 'not found'}, 404); return
+        mime = mimetypes.guess_type(str(path))[0] or 'application/octet-stream'
+        body = path.read_bytes()
+        self.send_response(200)
+        self.send_header('Content-Type', mime)
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'public, max-age=300')
+        self.end_headers()
+        self.wfile.write(body)
 
-    jid, job = _new_job()
-    job['output_file'] = out
+    # ── Network info ───────────────────────────────────────────────────────
+    def _api_info(self):
+        ip     = _my_ip()
+        scheme = 'https' if _USE_HTTPS else 'http'
+        _json_resp(self, {
+            'ip': ip, 'port': _PORT,
+            'url':         f'{scheme}://{ip}:{_PORT}',
+            'scanner_url': f'{scheme}://{ip}:{_PORT}/scanner',
+        })
 
-    cmd = [sys.executable, 'receive.py', out,
-           '--mode', mode, '--timeout', str(b.get('timeout', 7200))]
-    if mode in ('visual', 'qr'):
-        cmd += ['--cam',   str(b.get('cam', 0)),
-                '--block', str(b.get('block', 2))]
-    if mode == 'audio':
-        cmd += ['--baud', str(b.get('baud', 300))]
-    if b.get('no_ack'):
-        cmd += ['--no-ack']
+    # ── File upload ────────────────────────────────────────────────────────
+    def _api_upload(self):
+        parts = _read_multipart(self)
+        if 'file' not in parts:
+            _json_resp(self, {'error': 'no file'}, 400); return
+        filename, data = parts['file']
+        fid  = uuid.uuid4().hex
+        ext  = Path(filename or 'file').suffix
+        path = UPLOAD_DIR / f'{fid}{ext}'
+        path.write_bytes(data)
+        _json_resp(self, {'file_id': fid, 'filename': filename,
+                          'path': str(path), 'size': len(data)})
 
-    threading.Thread(
-        target=_run_subprocess, args=(job, cmd, str(PROJECT_DIR)), daemon=True
-    ).start()
-    return jsonify(job_id=jid, output=out)
+    # ── Send job ───────────────────────────────────────────────────────────
+    def _api_send(self):
+        b    = _read_json(self)
+        path = b.get('path', '')
+        if not os.path.exists(path):
+            _json_resp(self, {'error': 'file not found'}, 400); return
+        mode    = b.get('mode', 'visual')
+        jid, job = _new_job()
+        cmd = [sys.executable, 'send.py', path, '--mode', mode]
+        if mode in ('visual', 'all'):
+            cmd += ['--block', str(b.get('block', 2)),
+                    '--hold',  str(b.get('hold', 80))]
+            if int(b.get('ack_cam', -1)) >= 0:
+                cmd += ['--ack-cam', str(b.get('ack_cam'))]
+        if mode in ('audio', 'all'):
+            cmd += ['--baud', str(b.get('baud', 300))]
+        if mode in ('qr', 'all'):
+            cmd += ['--fps', str(b.get('fps', 3))]
+        threading.Thread(target=_run_subprocess,
+                         args=(job, cmd, str(PROJECT_DIR)), daemon=True).start()
+        _json_resp(self, {'job_id': jid})
 
+    # ── Receive job ────────────────────────────────────────────────────────
+    def _api_receive(self):
+        b       = _read_json(self)
+        mode    = b.get('mode', 'visual')
+        outname = b.get('output', f'recv_{int(time.time())}')
+        out     = str(OUTPUT_DIR / outname)
+        jid, job = _new_job()
+        job['output_file'] = out
+        cmd = [sys.executable, 'receive.py', out,
+               '--mode', mode, '--timeout', str(b.get('timeout', 7200))]
+        if mode in ('visual', 'qr'):
+            cmd += ['--cam',   str(b.get('cam', 0)),
+                    '--block', str(b.get('block', 2))]
+        if mode == 'audio':
+            cmd += ['--baud', str(b.get('baud', 300))]
+        if b.get('no_ack'):
+            cmd += ['--no-ack']
+        threading.Thread(target=_run_subprocess,
+                         args=(job, cmd, str(PROJECT_DIR)), daemon=True).start()
+        _json_resp(self, {'job_id': jid, 'output': out})
 
-# ── SSE log stream ─────────────────────────────────────────────────────────────
-@app.route('/api/stream/<jid>')
-def api_stream(jid: str):
-    with _jobs_lock:
-        job = _jobs.get(jid)
-    if not job:
-        return jsonify(error='job not found'), 404
+    # ── SSE log stream ─────────────────────────────────────────────────────
+    def _api_stream(self, jid: str):
+        with _jobs_lock:
+            job = _jobs.get(jid)
+        if not job:
+            _json_resp(self, {'error': 'not found'}, 404); return
 
-    def generate():
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream')
+        self.send_header('Cache-Control', 'no-cache')
+        self.send_header('X-Accel-Buffering', 'no')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
         q = job['log_q']
-        while True:
-            try:
-                line = q.get(timeout=20)
-                if line.startswith('__DONE__'):
-                    code = int(line.split()[1])
-                    yield f"data: {json.dumps({'t': 'exit', 'code': code})}\n\n"
-                    return
-                yield f"data: {json.dumps({'t': 'log', 'msg': line})}\n\n"
-            except Empty:
-                yield f"data: {json.dumps({'t': 'ping'})}\n\n"
+        try:
+            while True:
+                try:
+                    line = q.get(timeout=20)
+                    if line.startswith('__DONE__'):
+                        code = int(line.split()[1])
+                        msg  = json.dumps({'t': 'exit', 'code': code}) + '\n\n'
+                    else:
+                        msg  = json.dumps({'t': 'log', 'msg': line}) + '\n\n'
+                    self.wfile.write(f'data: {msg}'.encode())
+                    self.wfile.flush()
+                    if line.startswith('__DONE__'):
+                        break
+                except Empty:
+                    self.wfile.write(b'data: {"t":"ping"}\n\n')
+                    self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
-    return Response(
-        stream_with_context(generate()),
-        mimetype='text/event-stream',
-        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
-    )
+    # ── Stop job ───────────────────────────────────────────────────────────
+    def _api_stop(self, jid: str):
+        with _jobs_lock:
+            job = _jobs.get(jid)
+        if job:
+            proc = job.get('process')
+            if proc and proc.poll() is None:
+                proc.terminate(); job['status'] = 'stopped'
+        _json_resp(self, {'ok': True})
 
+    # ── Job status ─────────────────────────────────────────────────────────
+    def _api_job_status(self, jid: str):
+        with _jobs_lock:
+            job = _jobs.get(jid)
+        if not job:
+            _json_resp(self, {'error': 'not found'}, 404); return
+        _json_resp(self, {'status': job['status'],
+                          'output': job.get('output_file'),
+                          'elapsed': round(time.time() - job['t0'], 1)})
 
-# ── Stop job ───────────────────────────────────────────────────────────────────
-@app.route('/api/stop/<jid>', methods=['POST'])
-def api_stop(jid: str):
-    with _jobs_lock:
-        job = _jobs.get(jid)
-    if job:
-        proc = job.get('process')
-        if proc and proc.poll() is None:
-            proc.terminate()
-            job['status'] = 'stopped'
-    return jsonify(ok=True)
+    # ── Download ───────────────────────────────────────────────────────────
+    def _api_download(self, jid: str):
+        with _jobs_lock:
+            job = _jobs.get(jid)
+        if not job:
+            _json_resp(self, {'error': 'not found'}, 404); return
+        out = job.get('output_file')
+        if not out or not os.path.exists(out):
+            _json_resp(self, {'error': 'file not ready'}, 404); return
+        body = Path(out).read_bytes()
+        name = os.path.basename(out)
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/octet-stream')
+        self.send_header('Content-Disposition', f'attachment; filename="{name}"')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
+    # ── Validate ───────────────────────────────────────────────────────────
+    def _api_validate(self):
+        parts = _read_multipart(self)
+        if 'original' not in parts or 'received' not in parts:
+            _json_resp(self, {'error': 'need both files'}, 400); return
+        orig_name, orig_data = parts['original']
+        recv_name, recv_data = parts['received']
+        op = UPLOAD_DIR / f'vo_{uuid.uuid4().hex}{Path(orig_name or "f").suffix}'
+        rp = UPLOAD_DIR / f'vr_{uuid.uuid4().hex}{Path(recv_name or "f").suffix}'
+        op.write_bytes(orig_data); rp.write_bytes(recv_data)
+        try:
+            from marichi.validator import Validator
+            rep = Validator(str(op), str(rp)).run()
+            _json_resp(self, {
+                'verdict':   rep.verdict,
+                'orig_size': rep.original_size,
+                'recv_size': rep.received_size,
+                'byte_diffs': rep.byte_diff_count,
+                'bit_diffs':  rep.bit_diff_count,
+                'first_diff': rep.first_diff_offset,
+                'sha_match':  rep.original_sha256 == rep.received_sha256,
+                'sha_orig':   rep.original_sha256,
+                'sha_recv':   rep.received_sha256,
+            })
+        except Exception as exc:
+            _json_resp(self, {'error': str(exc)}, 500)
+        finally:
+            op.unlink(missing_ok=True); rp.unlink(missing_ok=True)
 
-# ── Job status ─────────────────────────────────────────────────────────────────
-@app.route('/api/status/<jid>')
-def api_job_status(jid: str):
-    with _jobs_lock:
-        job = _jobs.get(jid)
-    if not job:
-        return jsonify(error='not found'), 404
-    return jsonify(status=job['status'],
-                   output=job.get('output_file'),
-                   elapsed=round(time.time() - job['t0'], 1))
+    # ── QR Web ─────────────────────────────────────────────────────────────
+    def _qr_start(self):
+        b    = _read_json(self)
+        path = b.get('path', '')
+        if not os.path.exists(path):
+            _json_resp(self, {'error': 'file not found'}, 400); return
+        try:
+            sess = QRWebSession(path)
+            _qr[sess.sid] = sess
+            _json_resp(self, {'session_id': sess.sid, 'total': sess.total,
+                              'size': sess.size, 'name': sess.name,
+                              'sha256': sess.sha256})
+        except Exception as exc:
+            _json_resp(self, {'error': str(exc)}, 500)
 
+    def _qr_frame(self, sid: str, n: int):
+        sess = _qr.get(sid)
+        if not sess:
+            _json_resp(self, {'error': 'session not found'}, 404); return
+        if not (0 <= n < sess.total):
+            _json_resp(self, {'error': 'out of range'}, 400); return
+        try:
+            body = sess.get_png(n)
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/png')
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Cache-Control', 'public, max-age=3600')
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as exc:
+            _json_resp(self, {'error': str(exc)}, 500)
 
-# ── Download received file ─────────────────────────────────────────────────────
-@app.route('/api/download/<jid>')
-def api_download(jid: str):
-    with _jobs_lock:
-        job = _jobs.get(jid)
-    if not job:
-        return jsonify(error='not found'), 404
-    out = job.get('output_file')
-    if not out or not os.path.exists(out):
-        return jsonify(error='file not ready'), 404
-    return send_file(out, as_attachment=True,
-                     download_name=os.path.basename(out))
+    def _qr_status(self, sid: str):
+        sess = _qr.get(sid)
+        if not sess:
+            _json_resp(self, {'error': 'not found'}, 404); return
+        _json_resp(self, sess.progress)
 
-
-# ── Validate ───────────────────────────────────────────────────────────────────
-@app.route('/api/validate', methods=['POST'])
-def api_validate():
-    orig = request.files.get('original')
-    recv = request.files.get('received')
-    if not orig or not recv:
-        return jsonify(error='need both files'), 400
-
-    op = UPLOAD_DIR / f'vo_{uuid.uuid4().hex}{Path(orig.filename or "f").suffix}'
-    rp = UPLOAD_DIR / f'vr_{uuid.uuid4().hex}{Path(recv.filename or "f").suffix}'
-    orig.save(str(op))
-    recv.save(str(rp))
-
-    try:
-        from marichi.validator import Validator
-        rep = Validator(str(op), str(rp)).run()
-        return jsonify(
-            verdict      = rep.verdict,
-            orig_size    = rep.original_size,
-            recv_size    = rep.received_size,
-            byte_diffs   = rep.byte_diff_count,
-            bit_diffs    = rep.bit_diff_count,
-            first_diff   = rep.first_diff_offset,
-            sha_match    = rep.original_sha256 == rep.received_sha256,
-            sha_orig     = rep.original_sha256,
-            sha_recv     = rep.received_sha256,
-        )
-    except Exception as exc:
-        return jsonify(error=str(exc)), 500
-    finally:
-        op.unlink(missing_ok=True)
-        rp.unlink(missing_ok=True)
-
-
-# ── QR Web Transfer ────────────────────────────────────────────────────────────
-
-@app.route('/api/qr/start', methods=['POST'])
-def qr_start():
-    b    = request.json or {}
-    path = b.get('path', '')
-    if not os.path.exists(path):
-        return jsonify(error='file not found'), 400
-    try:
-        sess = QRWebSession(path)
-        _qr_sessions[sess.sid] = sess
-        return jsonify(session_id=sess.sid, total=sess.total,
-                       size=sess.size, name=sess.name, sha256=sess.sha256)
-    except Exception as exc:
-        return jsonify(error=str(exc)), 500
-
-
-@app.route('/api/qr/frame/<sid>/<int:n>')
-def qr_frame(sid: str, n: int):
-    sess = _qr_sessions.get(sid)
-    if not sess:
-        return jsonify(error='session not found'), 404
-    if not (0 <= n < sess.total):
-        return jsonify(error='frame out of range'), 400
-    try:
-        return Response(sess.get_png(n), mimetype='image/png',
-                        headers={'Cache-Control': 'public, max-age=3600'})
-    except Exception as exc:
-        return jsonify(error=str(exc)), 500
-
-
-@app.route('/api/qr/status/<sid>')
-def qr_status(sid: str):
-    sess = _qr_sessions.get(sid)
-    if not sess:
-        return jsonify(error='not found'), 404
-    return jsonify(sess.progress)
-
-
-@app.route('/api/qr/ack', methods=['POST'])
-def qr_ack():
-    """Phone calls this after successfully scanning a frame."""
-    b   = request.json or {}
-    sid = b.get('session_id', '')
-    n   = b.get('frame_no', -1)
-    sess = _qr_sessions.get(sid)
-    if not sess:
-        return jsonify(error='session not found'), 404
-    return jsonify(sess.ack(int(n)))
-
-
-# ── Network info ───────────────────────────────────────────────────────────────
-@app.route('/api/info')
-def api_info():
-    ip     = _my_ip()
-    scheme = 'https' if _USE_HTTPS else 'http'
-    return jsonify(
-        ip          = ip,
-        port        = _PORT,
-        url         = f'{scheme}://{ip}:{_PORT}',
-        scanner_url = f'{scheme}://{ip}:{_PORT}/scanner',
-    )
+    def _qr_ack(self):
+        b   = _read_json(self)
+        sid = b.get('session_id', '')
+        n   = b.get('frame_no', -1)
+        sess = _qr.get(sid)
+        if not sess:
+            _json_resp(self, {'error': 'session not found'}, 404); return
+        _json_resp(self, sess.ack(int(n)))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════════
+def _make_ssl_context() -> ssl.SSLContext:
+    """Generate self-signed cert with openssl CLI and wrap server socket."""
+    d    = Path('/tmp/marichi_ssl'); d.mkdir(exist_ok=True)
+    cert = d / 'cert.pem'; key = d / 'key.pem'
+    if not cert.exists():
+        subprocess.run([
+            'openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+            '-out', str(cert), '-keyout', str(key),
+            '-days', '365', '-subj', '/CN=marichi-local'
+        ], capture_output=True, check=True)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(str(cert), str(key))
+    return ctx
 
-_USE_HTTPS = False
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description='MARICHI Web UI')
     ap.add_argument('--port',  type=int, default=5000)
     ap.add_argument('--https', action='store_true',
-                    help='Enable HTTPS with adhoc cert (needed for phone camera)')
+                    help='Enable HTTPS (self-signed cert via openssl)')
     args = ap.parse_args()
 
     _PORT      = args.port
@@ -485,18 +504,31 @@ if __name__ == '__main__':
     ip     = _my_ip()
     scheme = 'https' if args.https else 'http'
 
-    print('\n🌀 MARICHI Web UI  v1.0')
-    print('─' * 40)
+    server = ThreadingHTTPServer(('0.0.0.0', args.port), MarichiHandler)
+
+    if args.https:
+        try:
+            server.socket = _make_ssl_context().wrap_socket(
+                server.socket, server_side=True)
+            print(f'🔒 HTTPS enabled (self-signed cert)')
+        except Exception as e:
+            print(f'⚠️  HTTPS failed ({e}) — falling back to HTTP')
+
+    print(f'\n🌀 MARICHI Web UI  v1.0')
+    print('─' * 44)
     print(f'  Laptop  : {scheme}://localhost:{args.port}')
     print(f'  Android : {scheme}://{ip}:{args.port}')
     print(f'  Scanner : {scheme}://{ip}:{args.port}/scanner')
     if not args.https:
         print()
-        print('  ⚠️  Phone camera requires HTTPS.')
+        print(f'  ⚠️  Phone camera needs HTTPS.')
         print(f'     Run:  python app.py --https')
-        print(f'     Then accept the cert warning on your phone.')
-    print('─' * 40 + '\n')
+        print(f'     Then tap "Advanced → Proceed" on cert warning.')
+    print('─' * 44)
+    print(f'  Ctrl+C to stop\n')
 
-    ssl_ctx = 'adhoc' if args.https else None
-    app.run(host='0.0.0.0', port=args.port,
-            debug=False, threaded=True, ssl_context=ssl_ctx)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print('\n[MARICHI] Server stopped.')
+        server.shutdown()
