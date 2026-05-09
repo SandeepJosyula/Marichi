@@ -245,14 +245,20 @@ class AudioSender:
     def __init__(self, filepath: str,
                  baud: int = BAUD_RATE,
                  ack_mode: bool = True,
-                 device=None):
+                 device=None,
+                 session_id: Optional[bytes] = None):
+        """
+        session_id: shared 8-byte session token; auto-generated if None.
+                    Pass an explicit value when multiple transport modes transmit the
+                    same file simultaneously so all channels share one session ID.
+        """
         if sd is None:
             raise RuntimeError("sounddevice not installed — run: pip install sounddevice")
         self.filepath   = filepath
         self.baud       = baud
         self.ack_mode   = ack_mode
         self.device     = device
-        self.session_id = secrets.token_bytes(8)
+        self.session_id = session_id if session_id is not None else secrets.token_bytes(8)
 
         with open(filepath, 'rb') as f:
             self.data = f.read()
@@ -357,12 +363,9 @@ class AudioSender:
             print("\n[SENDER] Aborted.")
             return
 
-        # Completion tone: 3× ACK tone burst
-        completion = np.concatenate([_tone(ACK_TONE, int(SAMPLE_RATE * 0.3))] * 3
-                                    + [_silence(int(SAMPLE_RATE * 0.1))] * 3)
-        # Interleave silence
+        # Completion tone: 3× ACK tone bursts interleaved with silence
         arr = []
-        for i in range(3):
+        for _ in range(3):
             arr.append(_tone(ACK_TONE, int(SAMPLE_RATE * 0.3)))
             arr.append(_silence(int(SAMPLE_RATE * 0.1)))
         self._play(np.concatenate(arr))

@@ -14,6 +14,7 @@ import time
 import hashlib
 import secrets
 import math
+from typing import Optional
 import numpy as np
 import cv2
 from tqdm import tqdm
@@ -27,18 +28,22 @@ class Sender:
     def __init__(self, filepath: str,
                  block_size: int  = C.BLOCK_SIZE,
                  hold_ms: int     = C.FRAME_HOLD_MS,
-                 ack_cam: int     = -1):
+                 ack_cam: int     = -1,
+                 session_id: Optional[bytes] = None):
         """
         filepath  : path to file to transmit
         block_size: pixels per data cell (1=fast, 4=robust)
         hold_ms   : ms per frame in timer mode (ignored if ack_cam >= 0)
         ack_cam   : camera index for ACK detection (-1 = disabled)
+        session_id: shared 8-byte session token; auto-generated if None.
+                    Pass an explicit value when multiple transport modes (visual,
+                    audio, QR) transmit the same file so they all share one session.
         """
         self.filepath   = filepath
         self.block_size = block_size
         self.hold_ms    = hold_ms
         self.ack_cam    = ack_cam
-        self.session_id = secrets.token_bytes(8)
+        self.session_id = session_id if session_id is not None else secrets.token_bytes(8)
 
         with open(filepath, 'rb') as f:
             self.data = f.read()

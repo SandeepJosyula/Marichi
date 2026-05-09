@@ -57,9 +57,7 @@ def _pixels_to_cells(region: np.ndarray, cols: int, rows: int) -> np.ndarray:
                          interpolation=cv2.INTER_AREA)
     arr = resized.reshape(rows, C.BLOCK_SIZE, cols, C.BLOCK_SIZE, 3).mean(axis=(1, 3))
     diff = arr[:, :, np.newaxis, :].astype(np.float32) - C.PALETTE_BGR.astype(np.float32)
-    return diff.pow(2).sum(axis=3).argmin(axis=2).astype(np.uint8) \
-        if hasattr(diff, 'pow') \
-        else ((diff ** 2).sum(axis=3)).argmin(axis=2).astype(np.uint8)
+    return ((diff ** 2).sum(axis=3)).argmin(axis=2).astype(np.uint8)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -260,12 +258,38 @@ def _find_screen_corners(bgr: np.ndarray) -> np.ndarray | None:
     if len(rects) < 4:
         return None
 
+    # Assign each reference corner to the nearest rect, with no reuse,
+    # so one rect cannot be selected for two corners.
     corners_ref = [(0, 0), (w, 0), (0, h), (w, h)]
     selected    = []
+    used_idx    = set()
     for rx, ry in corners_ref:
-        best = min(rects, key=lambda r: (r[0]+r[2]//2-rx)**2 + (r[1]+r[3]//2-ry)**2)
-        selected.append([best[0]+best[2]//2, best[1]+best[3]//2])
-    return np.array(selected, dtype=np.float32)
+        candidates = [(i, r) for i, r in enumerate(rects) if i not in used_idx]
+        if not candidates:
+            return None
+        best_i, best_r = min(
+            candidates,
+            key=lambda ir: (ir[1][0]+ir[1][2]//2-rx)**2 + (ir[1][1]+ir[1][3]//2-ry)**2
+        )
+        used_idx.add(best_i)
+        selected.append([best_r[0]+best_r[2]//2, best_r[1]+best_r[3]//2])
+
+    corners = np.array(selected, dtype=np.float32)
+
+    # Sanity check: corners must form a proper quadrilateral spanning the image.
+    # Each corner must be in its expected quadrant (within 40% of image size).
+    margin_x, margin_y = w * 0.4, h * 0.4
+    tl, tr, bl, br = corners
+    if not (tl[0] < margin_x and tl[1] < margin_y):   # TL: top-left quadrant
+        return None
+    if not (tr[0] > w - margin_x and tr[1] < margin_y):  # TR: top-right
+        return None
+    if not (bl[0] < margin_x and bl[1] > h - margin_y):  # BL: bottom-left
+        return None
+    if not (br[0] > w - margin_x and br[1] > h - margin_y):  # BR: bottom-right
+        return None
+
+    return corners
 
 
 def decode_frame(bgr: np.ndarray) -> tuple[bytes, int, int, bytes, bool] | None:
@@ -281,18 +305,23 @@ def decode_frame(bgr: np.ndarray) -> tuple[bytes, int, int, bytes, bool] | None:
     h_img, w_img = bgr.shape[:2]
 
     # ── Perspective correction ─────────────────────────────────────────────────
-    corners = _find_screen_corners(bgr)
-    if corners is not None:
-        sx, sy = w_img / C.SCREEN_W, h_img / C.SCREEN_H
-        dst = np.array([
-            [C.BORDER * C.BLOCK_SIZE * sx,          C.BORDER * C.BLOCK_SIZE * sy],
-            [(C.CELLS_X-C.BORDER)*C.BLOCK_SIZE*sx,  C.BORDER * C.BLOCK_SIZE * sy],
-            [C.BORDER * C.BLOCK_SIZE * sx,           (C.CELLS_Y-C.BORDER)*C.BLOCK_SIZE*sy],
-            [(C.CELLS_X-C.BORDER)*C.BLOCK_SIZE*sx,   (C.CELLS_Y-C.BORDER)*C.BLOCK_SIZE*sy],
-        ], dtype=np.float32)
-        M, _ = cv2.findHomography(corners, dst, cv2.RANSAC, 5.0)
-        if M is not None:
-            bgr = cv2.warpPerspective(bgr, M, (w_img, h_img))
+    # Only attempt perspective correction when the input frame is NOT already at
+    # canonical screen resolution.  Frames at exactly SCREEN_W × SCREEN_H (direct
+    # screen captures, synthetic/smoke-test frames) are already aligned and need
+    # no warping — attempting it with a noisy corner detection would corrupt them.
+    if h_img != C.SCREEN_H or w_img != C.SCREEN_W:
+        corners = _find_screen_corners(bgr)
+        if corners is not None:
+            sx, sy = w_img / C.SCREEN_W, h_img / C.SCREEN_H
+            dst = np.array([
+                [C.BORDER * C.BLOCK_SIZE * sx,          C.BORDER * C.BLOCK_SIZE * sy],
+                [(C.CELLS_X-C.BORDER)*C.BLOCK_SIZE*sx,  C.BORDER * C.BLOCK_SIZE * sy],
+                [C.BORDER * C.BLOCK_SIZE * sx,           (C.CELLS_Y-C.BORDER)*C.BLOCK_SIZE*sy],
+                [(C.CELLS_X-C.BORDER)*C.BLOCK_SIZE*sx,   (C.CELLS_Y-C.BORDER)*C.BLOCK_SIZE*sy],
+            ], dtype=np.float32)
+            M, _ = cv2.findHomography(corners, dst, cv2.RANSAC, 5.0)
+            if M is not None:
+                bgr = cv2.warpPerspective(bgr, M, (w_img, h_img))
 
     canonical = cv2.resize(bgr, (C.SCREEN_W, C.SCREEN_H), interpolation=cv2.INTER_LINEAR)
     x0d, x1d  = C.DATA_X0 * C.BLOCK_SIZE, C.DATA_X1 * C.BLOCK_SIZE

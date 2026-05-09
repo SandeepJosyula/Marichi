@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "marichi"
+version = "0.3.0"
+description = "Zero-loss air-gap file transfer modem — visual, QR, and audio transport"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Sandeep Josyula" }]
+keywords = ["air-gap", "file-transfer", "qr", "modem", "reed-solomon"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications :: File Sharing",
+    "Topic :: Security",
+]
+dependencies = [
+    "numpy>=1.24.0",
+    "reedsolo>=1.7.0",
+    "tqdm>=4.65.0",
+    "opencv-python>=4.8.0",
+    "sounddevice>=0.4.6",
+    "qrcode[pil]>=7.4.2",
+    "Pillow>=10.0.0",
+    "flask>=3.0.0",
+]
+
+[project.scripts]
+marichi-send      = "send:main"
+marichi-receive   = "receive:main"
+marichi-bootstrap = "bootstrap_receiver:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["marichi*"]
+
+[tool.setuptools.package-data]
+marichi = ["*.html"]
+
+[project.urls]
+Homepage   = "https://github.com/josyula/marichi"
+Repository = "https://github.com/josyula/marichi"

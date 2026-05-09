@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<title>MARICHI Receiver</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d1117;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,monospace;
+     display:flex;flex-direction:column;align-items:center;min-height:100vh;padding-bottom:32px}
+h1{font-size:1.05rem;padding:14px 12px 4px;color:#58a6ff;letter-spacing:2px;text-align:center}
+p.sub{font-size:0.72rem;color:#6e7681;padding:0 12px 10px;text-align:center}
+
+#cam-wrap{position:relative;width:100%;max-width:520px;background:#161b22;
+          border-radius:10px;overflow:hidden;aspect-ratio:4/3}
+#cam{width:100%;height:100%;object-fit:cover;display:none}
+#placeholder{position:absolute;inset:0;display:flex;flex-direction:column;
+             align-items:center;justify-content:center;gap:8px;color:#6e7681}
+#placeholder .icon{font-size:3rem}
+
+#start-btn,#dl-btn,#reset-btn{
+  margin:12px auto 0;padding:13px 0;border:none;border-radius:8px;
+  font-size:1rem;cursor:pointer;width:calc(100% - 24px);max-width:520px;display:block}
+#start-btn{background:#238636;color:#fff}
+#start-btn:disabled{background:#21262d;color:#6e7681;cursor:default}
+#dl-btn{background:#1f6feb;color:#fff;display:none}
+#reset-btn{background:#21262d;color:#8b949e;margin-top:8px;display:none}
+
+#cards{width:100%;max-width:520px;padding:10px 12px 0;
+       display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.card{background:#161b22;border-radius:8px;padding:10px 12px}
+.card .lbl{font-size:0.62rem;color:#6e7681;text-transform:uppercase;letter-spacing:1px}
+.card .val{font-size:1.2rem;color:#e6edf3;font-weight:600;margin-top:2px}
+
+#prog-wrap{width:100%;max-width:520px;padding:10px 12px 4px}
+#prog-bg{width:100%;height:10px;background:#21262d;border-radius:5px}
+#prog-bar{width:0%;height:10px;background:#238636;border-radius:5px;transition:width .4s}
+
+#status{width:100%;max-width:520px;padding:6px 12px;font-size:0.78rem;color:#8b949e;min-height:22px}
+#log{width:100%;max-width:520px;padding:0 12px;font-size:0.7rem;color:#6e7681;height:90px;overflow-y:auto}
+#err{width:100%;max-width:520px;padding:8px 12px;font-size:0.8rem;color:#f85149;display:none}
+</style>
+</head>
+<body>
+
+<h1>🌀 MARICHI Receiver</h1>
+<p class="sub">Aim camera at Mac screen • Decodes entirely on this device • No network needed</p>
+
+<div id="cam-wrap">
+  <div id="placeholder"><span class="icon">📷</span><span>Camera preview</span></div>
+  <video id="cam" autoplay playsinline muted></video>
+</div>
+
+<div id="err"></div>
+
+<div id="cards">
+  <div class="card"><div class="lbl">Frames</div><div class="val" id="c-fr">0 / ?</div></div>
+  <div class="card"><div class="lbl">Progress</div><div class="val" id="c-pct">0%</div></div>
+  <div class="card"><div class="lbl">CRC Fails</div><div class="val" id="c-crc">0</div></div>
+  <div class="card"><div class="lbl">Size</div><div class="val" id="c-sz">—</div></div>
+</div>
+<div id="prog-wrap"><div id="prog-bg"><div id="prog-bar"></div></div></div>
+<div id="status">Tap Start to begin</div>
+<div id="log"></div>
+
+<button id="start-btn" onclick="startCamera()">📷 Start Camera</button>
+<button id="dl-btn" onclick="downloadFile()">⬇ Download File</button>
+<button id="reset-btn" onclick="resetAll()">🔄 New Transfer</button>
+
+<script>
+"use strict";
+
+// ─── GF(2^8) tables — primitive polynomial 0x11D (matches Python reedsolo) ───
+const GF_EXP = new Uint8Array(512);
+const GF_LOG = new Uint8Array(256);
+(()=>{
+  let x=1;
+  for(let i=0;i<255;i++){
+    GF_EXP[i]=x; GF_LOG[x]=i;
+    x<<=1; if(x&256) x^=0x11D;
+  }
+  for(let i=255;i<512;i++) GF_EXP[i]=GF_EXP[i-255];
+})();
+
+const gfMul=(x,y)=>x&&y?GF_EXP[(GF_LOG[x]+GF_LOG[y])%255]:0;
+const gfDiv=(x,y)=>x?GF_EXP[((GF_LOG[x]-GF_LOG[y])+255)%255]:0;
+const gfPow=(x,p)=>GF_EXP[(GF_LOG[x]*p)%255];
+const gfInv=(x)=>GF_EXP[255-GF_LOG[x]];
+
+function polyMul(p,q){
+  const r=new Uint8Array(p.length+q.length-1);
+  for(let j=0;j<q.length;j++) for(let i=0;i<p.length;i++) r[i+j]^=gfMul(p[i],q[j]);
+  return r;
+}
+function polyEval(p,x){let y=p[0]; for(let i=1;i<p.length;i++) y=gfMul(y,x)^p[i]; return y;}
+
+// Pre-build RS generator polynomial for nsym=32
+const RS_NSYM=32, FCR=0, PRIM=2;
+let GEN=(()=>{
+  let g=new Uint8Array([1]);
+  for(let i=0;i<RS_NSYM;i++) g=polyMul(g,new Uint8Array([1,gfPow(PRIM,FCR+i)]));
+  return g;
+})();
+
+function rsSyndromes(msg,nsym){
+  const s=new Uint8Array(nsym);
+  for(let i=0;i<nsym;i++) for(let j=0;j<msg.length;j++) s[i]=gfMul(s[i],gfPow(PRIM,FCR+i))^msg[j];
+  return s;
+}
+function rsErrLoc(synd,nsym){
+  let eL=new Uint8Array([1]), oL=new Uint8Array([1]);
+  for(let i=0;i<nsym;i++){
+    let d=synd[i];
+    for(let j=1;j<eL.length;j++) d^=gfMul(eL[eL.length-1-j],synd[i-j]);
+    oL=new Uint8Array([...oL,0]);
+    if(d){
+      if(oL.length>eL.length){
+        const t=new Uint8Array(oL.length);
+        for(let k=0;k<oL.length;k++) t[k]=gfMul(oL[k],d);
+        oL=new Uint8Array(eL.length);
+        for(let k=0;k<eL.length;k++) oL[k]=gfMul(eL[k],gfInv(d));
+        eL=t;
+      }
+      const sc=new Uint8Array(oL.length);
+      for(let k=0;k<oL.length;k++) sc[k]=gfMul(oL[k],d);
+      const pad=eL.length-sc.length;
+      for(let k=0;k<sc.length;k++) eL[k+pad]^=sc[k];
+    }
+  }
+  return eL;
+}
+function rsFindErrPos(eL,nMsg){
+  const errs=eL.length-1, pos=[];
+  for(let i=0;i<nMsg;i++) if(polyEval(eL,gfPow(PRIM,i))===0) pos.push(nMsg-1-i);
+  return pos.length===errs?pos:null;
+}
+function rsCorrect(msg,synd,pos){
+  const coef=pos.map(p=>msg.length-1-p);
+  let eL=new Uint8Array([1]);
+  for(const c of coef) eL=polyMul(eL,new Uint8Array([gfPow(PRIM,c),1]));
+  const sR=[...synd].reverse();
+  let eE=polyMul(new Uint8Array(sR),eL);
+  eE=eE.slice(eE.length-eL.length+1);
+  const out=new Uint8Array(msg);
+  for(let i=0;i<pos.length;i++){
+    const Xi=gfInv(gfPow(PRIM,coef[i]));
+    let den=new Uint8Array([1]);
+    for(let j=0;j<coef.length;j++){
+      if(j===i) continue;
+      den=polyMul(den,new Uint8Array([gfPow(PRIM,coef[j]),1]));
+    }
+    const mag=gfDiv(gfMul(1,polyEval(eE,Xi)),gfMul(gfPow(PRIM,coef[i]),polyEval(den,Xi)));
+    out[pos[i]]^=mag;
+  }
+  return out;
+}
+
+/** Decode one 160-byte RS block → 128 bytes or null */
+function rsDecode(block){
+  const synd=rsSyndromes(block,RS_NSYM);
+  if(synd.every(s=>s===0)) return block.slice(0,128);
+  const eL=rsErrLoc(synd,RS_NSYM);
+  const pos=rsFindErrPos(eL,block.length);
+  if(!pos) return null;
+  return rsCorrect(block,synd,pos).slice(0,128);
+}
+
+// ─── CRC32 (zlib compatible) ──────────────────────────────────────────────
+const CRC_TBL=(()=>{const t=new Uint32Array(256);for(let i=0;i<256;i++){let c=i;for(let j=0;j<8;j++)c=(c&1)?(0xEDB88320^(c>>>1)):(c>>>1);t[i]=c;}return t;})();
+function crc32(b){let c=0xFFFFFFFF;for(let i=0;i<b.length;i++)c=CRC_TBL[(c^b[i])&0xFF]^(c>>>8);return(c^0xFFFFFFFF)>>>0;}
+
+// ─── Base64 decode ────────────────────────────────────────────────────────
+function b64Decode(s){
+  const bin=atob(s);
+  const out=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) out[i]=bin.charCodeAt(i);
+  return out;
+}
+
+// ─── MARICHI QR frame constants ───────────────────────────────────────────
+const QR_MAGIC     = new Uint8Array([0xCA,0xFE,0xBB,0x44]);
+const QR_HDR_LEN   = 26;
+const CHUNK_RAW    = 128, CHUNK_ENC = 160;
+const WEB_PREFIX   = "MRCV:";  // marker for web-safe base64 QR frames
+
+function u32be(b,o){return((b[o]<<24)|(b[o+1]<<16)|(b[o+2]<<8)|b[o+3])>>>0;}
+function u16be(b,o){return((b[o]<<8)|b[o+1])>>>0;}
+function eqArr(a,b){if(a.length!==b.length)return false;for(let i=0;i<a.length;i++)if(a[i]!==b[i])return false;return true;}
+
+/**
+ * Parse a barcode rawValue string → {frameNo,totalFrames,sessionId,payload} or null
+ *
+ * Supports two QR formats:
+ *   1. Web-safe: rawValue starts with "MRCV:" followed by base64-encoded MARICHI frame
+ *   2. Binary fallback: rawValue as latin-1 bytes (for laptop-to-laptop QR mode)
+ */
+function parseMarichiFrame(rawValue){
+  let raw;
+  if(rawValue.startsWith(WEB_PREFIX)){
+    try{ raw=b64Decode(rawValue.slice(WEB_PREFIX.length)); }
+    catch(e){ return null; }
+  } else {
+    // binary fallback (latin-1)
+    raw=new Uint8Array(rawValue.length);
+    for(let i=0;i<rawValue.length;i++) raw[i]=rawValue.charCodeAt(i)&0xFF;
+  }
+
+  if(raw.length<QR_HDR_LEN) return null;
+  if(!eqArr(raw.slice(0,4),QR_MAGIC)) return null;
+
+  const sessionId   = raw.slice(4,12);
+  const frameNo     = u32be(raw,12);
+  const totalFrames = u32be(raw,16);
+  const hdrCrc32    = u32be(raw,20);
+  const payLen      = u16be(raw,24);
+
+  const eccData  = raw.slice(QR_HDR_LEN);
+  const nChunks  = Math.floor(eccData.length/CHUNK_ENC);
+  if(!nChunks) return null;
+
+  const decoded = new Uint8Array(nChunks*CHUNK_RAW);
+  for(let i=0;i<nChunks;i++){
+    const chunk=eccData.slice(i*CHUNK_ENC,(i+1)*CHUNK_ENC);
+    const dec=rsDecode(chunk);
+    if(!dec) return null;
+    decoded.set(dec,i*CHUNK_RAW);
+  }
+
+  const payload=decoded.slice(0,payLen);
+  if(crc32(payload)!==hdrCrc32) return null;
+
+  return{frameNo,totalFrames,sessionId,payload};
+}
+
+// ─── State ────────────────────────────────────────────────────────────────
+let sessionId=null, totalFrames=0;
+const received={};
+let crcFails=0, scanning=false, done=false, assembledBlob=null;
+
+// ─── UI helpers ───────────────────────────────────────────────────────────
+const bar=document.getElementById("prog-bar");
+const statusEl=document.getElementById("status");
+const logEl=document.getElementById("log");
+function setStatus(m){statusEl.textContent=m;}
+function addLog(m,c){
+  const d=document.createElement("div");
+  d.textContent=new Date().toLocaleTimeString()+"  "+m;
+  if(c) d.style.color=c;
+  logEl.appendChild(d); logEl.scrollTop=logEl.scrollHeight;
+}
+function updateUI(){
+  const n=Object.keys(received).length;
+  const tot=totalFrames||0;
+  const pct=tot>0?Math.round(100*n/tot):0;
+  document.getElementById("c-fr").textContent=tot>0?`${n} / ${tot}`:`${n} / ?`;
+  document.getElementById("c-pct").textContent=pct+"%";
+  document.getElementById("c-crc").textContent=crcFails;
+  bar.style.width=pct+"%";
+}
+function showErr(m){
+  const e=document.getElementById("err");
+  e.textContent=m; e.style.display="block";
+}
+
+// ─── Camera + BarcodeDetector ─────────────────────────────────────────────
+const video=document.getElementById("cam");
+let detector=null;
+
+async function startCamera(){
+  const btn=document.getElementById("start-btn");
+  btn.disabled=true;
+
+  // Check BarcodeDetector support
+  if(!("BarcodeDetector" in window)){
+    showErr(
+      "BarcodeDetector API not available in this browser.\n"+
+      "Required: Chrome 83+, Edge 83+, or Safari 17.4+ (iOS 17.4+).\n"+
+      "On iOS < 17.4: update to the latest iOS version."
+    );
+    setStatus("Browser not supported — see error above");
+    btn.disabled=false; return;
+  }
+
+  try{
+    const formats=await BarcodeDetector.getSupportedFormats();
+    if(!formats.includes("qr_code")){
+      showErr("QR code format not supported by this browser's BarcodeDetector.");
+      btn.disabled=false; return;
+    }
+    detector=new BarcodeDetector({formats:["qr_code"]});
+  }catch(e){
+    showErr("BarcodeDetector init error: "+e.message);
+    btn.disabled=false; return;
+  }
+
+  // ── Secure-context check ──────────────────────────────────────────────────
+  // getUserMedia is blocked on file:// origins in Android Chrome 94+ (Oct 2021).
+  // Detect this early and show actionable remediation steps.
+  if(window.location.protocol==="file:"){
+    document.getElementById("err").innerHTML=
+      "<strong>⚠ Camera blocked — file:// pages cannot access the camera</strong><br><br>"+
+      "Android Chrome 94+ requires HTTPS (or localhost) for camera access.<br>"+
+      "You opened this page from local storage (file://), so the camera is blocked.<br><br>"+
+      "<b>Option 1 — Chrome flags workaround (quick):</b><br>"+
+      "In Chrome address bar type&nbsp; <code>chrome://flags</code><br>"+
+      "Search: <em>unsafely treat insecure origin as secure</em><br>"+
+      "Add <code>file://</code> to the list &rarr; tap Relaunch Chrome<br>"+
+      "Then reopen this file — camera will work.<br><br>"+
+      "<b>Option 2 — HTTPS bootstrap server (proper):</b><br>"+
+      "On your Mac, run:<br>"+
+      "<code>&nbsp;&nbsp;python bootstrap_receiver.py --https</code><br>"+
+      "Scan the QR code &rarr; Chrome shows SSL warning &rarr; tap <em>Advanced</em> &rarr; <em>Proceed</em><br>"+
+      "Camera works because the page is served over HTTPS.";
+    document.getElementById("err").style.display="block";
+    setStatus("Camera blocked — see instructions above");
+    btn.disabled=false; return;
+  }
+
+  setStatus("Requesting camera access…");
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({
+      video:{facingMode:{ideal:"environment"},width:{ideal:1920},height:{ideal:1080}}
+    });
+    video.srcObject=stream;
+    await new Promise(r=>{video.onloadedmetadata=r;});
+    video.play();
+    document.getElementById("placeholder").style.display="none";
+    video.style.display="block";
+    scanning=true;
+    setStatus("Camera active — aim at Mac screen");
+    addLog("Camera started — scanning for MARICHI QR frames…");
+    document.getElementById("reset-btn").style.display="block";
+    requestAnimationFrame(scanLoop);
+  }catch(e){
+    showErr("Camera error: "+e.message);
+    setStatus("Camera error — check permissions");
+    btn.disabled=false;
+  }
+}
+
+let lastRawValue=null;
+
+async function scanLoop(){
+  if(!scanning) return;
+  if(video.readyState>=video.HAVE_ENOUGH_DATA){
+    try{
+      const barcodes=await detector.detect(video);
+      for(const b of barcodes){
+        if(b.rawValue===lastRawValue) continue;   // skip duplicate
+        lastRawValue=b.rawValue;
+        processBarcode(b.rawValue);
+      }
+    }catch(e){}
+  }
+  if(!done) requestAnimationFrame(scanLoop);
+}
+
+function processBarcode(rawValue){
+  const frame=parseMarichiFrame(rawValue);
+  if(!frame){ crcFails++; updateUI(); return; }
+
+  const{frameNo,totalFrames:tot,sessionId:sid,payload}=frame;
+
+  // Session init
+  if(!sessionId){
+    sessionId=sid; totalFrames=tot;
+    addLog(`Session: ${Array.from(sid).map(b=>b.toString(16).padStart(2,"0")).join("")}  frames=${tot}`);
+  }
+  if(!eqArr(sid,sessionId)) return;   // wrong session
+
+  if(frameNo in received) return;     // already have it
+
+  received[frameNo]=payload;
+  const n=Object.keys(received).length;
+  const pct=Math.round(100*n/tot);
+  const kb=(n*payload.length/1024).toFixed(1);
+  document.getElementById("c-sz").textContent=kb+"KB";
+  updateUI();
+  addLog(`✅ Frame ${frameNo+1}/${tot}  ${pct}%`,"#3fb950");
+  setStatus(`Receiving… ${n}/${tot} frames (${pct}%)`);
+
+  if(n>=tot){
+    done=true; scanning=false;
+    setStatus("✅ All frames received — assembling file…");
+    addLog("🎉 Complete! Assembling…","#3fb950");
+    setTimeout(assemble,80);
+  }
+}
+
+// ─── Assemble + download ──────────────────────────────────────────────────
+function assemble(){
+  const parts=[]; let missing=0;
+  for(let i=0;i<totalFrames;i++){
+    if(received[i]) parts.push(received[i]);
+    else{ parts.push(new Uint8Array(0)); missing++; }
+  }
+  const total=parts.reduce((s,p)=>s+p.length,0);
+  const buf=new Uint8Array(total);
+  let off=0; for(const p of parts){buf.set(p,off);off+=p.length;}
+  assembledBlob=new Blob([buf]);
+
+  const sz=total>1048576?(total/1048576).toFixed(2)+" MB":(total/1024).toFixed(1)+" KB";
+  document.getElementById("c-sz").textContent=sz;
+  bar.style.width="100%"; bar.style.background="#1f6feb";
+
+  if(missing){
+    setStatus(`⚠ ${missing} frames missing — partial file (${sz})`);
+    addLog(`⚠ ${missing} frames missing`,"#f0883e");
+  } else {
+    setStatus(`✅ File ready (${sz}) — tap Download`);
+    addLog(`File assembled: ${total.toLocaleString()} bytes`,"#3fb950");
+  }
+  document.getElementById("dl-btn").style.display="block";
+}
+
+function downloadFile(){
+  if(!assembledBlob) return;
+  const url=URL.createObjectURL(assembledBlob);
+  const a=document.createElement("a");
+  a.href=url; a.download="marichi_received";
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function resetAll(){
+  done=false; scanning=false; sessionId=null; totalFrames=0;
+  Object.keys(received).forEach(k=>delete received[k]);
+  crcFails=0; assembledBlob=null; lastRawValue=null;
+  bar.style.width="0%"; bar.style.background="#238636";
+  video.style.display="none";
+  document.getElementById("placeholder").style.display="flex";
+  document.getElementById("start-btn").disabled=false;
+  document.getElementById("dl-btn").style.display="none";
+  document.getElementById("reset-btn").style.display="none";
+  document.getElementById("err").style.display="none";
+  document.getElementById("c-fr").textContent="0 / ?";
+  document.getElementById("c-pct").textContent="0%";
+  document.getElementById("c-crc").textContent="0";
+  document.getElementById("c-sz").textContent="—";
+  logEl.innerHTML=""; setStatus("Tap Start to begin");
+  addLog("Session reset — ready for new transfer.");
+}
+</script>
+</body>
+</html>

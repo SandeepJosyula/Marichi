@@ -46,6 +46,10 @@ import base64
 import numpy as np
 from typing import Optional
 
+# Web-safe QR prefix — signals that the frame is base64-encoded
+# Allows phone browsers (BarcodeDetector) to decode binary data without encoding issues
+WEB_QR_PREFIX = b"MRCV:"
+
 try:
     import cv2
 except ImportError:
@@ -83,6 +87,7 @@ QR_CHUNK_ENC        = QR_CHUNK_RAW + QR_ECC_NSYM   # 160
 QR_N_CHUNKS         = QR_MAX_BINARY_BYTES // QR_CHUNK_ENC    # 18
 QR_PAYLOAD_PER_FRAME = QR_N_CHUNKS * QR_CHUNK_RAW            # 2304 bytes
 
+
 QR_FPS_DEFAULT      = 3     # frames per second default (conservative)
 QR_HOLD_MS_DEFAULT  = 1000 // QR_FPS_DEFAULT   # ms per QR display
 
@@ -91,6 +96,18 @@ QR_MAGIC   = b'\xCA\xFE\xBB\x44'
 # magic(4) + session(8) + frame_no(4) + total(4) + crc32(4) + pay_len(2) = 26 bytes
 QR_HDR_FMT = '>4s8sIIIH'
 QR_HDR_LEN = 26
+
+# ── Web-safe QR mode (for phone browser / BarcodeDetector) ───────────────────
+# Frame bytes are base64-encoded with "MRCV:" prefix so all QR readers handle
+# them correctly — no binary encoding issues on any phone browser.
+# Capacity: QR v40 ECC-L text (2953 chars) - 5 prefix = 2948 b64 chars
+#   → 2948//4*3 = 2208 raw bytes → 2208-26 header = 2182 for RS encoded data
+#   → 2182//160 = 13 chunks × 128 bytes = 1664 bytes payload per frame  (72% of binary mode)
+WEB_QR_TEXT_CAP          = 2953        # QR v40 ECC-L text chars
+WEB_QR_B64_AVAILABLE     = ((WEB_QR_TEXT_CAP - len(WEB_QR_PREFIX)) // 4) * 4   # 2944
+WEB_QR_RAW_BYTES         = WEB_QR_B64_AVAILABLE * 3 // 4                       # 2208
+WEB_QR_N_CHUNKS          = (WEB_QR_RAW_BYTES - QR_HDR_LEN) // QR_CHUNK_ENC    # 13
+WEB_QR_PAYLOAD_PER_FRAME = WEB_QR_N_CHUNKS * QR_CHUNK_RAW                     # 1664
 
 # ACK window colours (same as visual mode)
 ACK_GREEN  = (0,   200,   0)
@@ -136,7 +153,7 @@ def encode_qr_frame(payload: bytes,
                     frame_no: int,
                     total_frames: int,
                     session_id: bytes) -> bytes:
-    """Return raw bytes to embed in QR code."""
+    """Return raw bytes to embed in QR code (binary mode, laptop-to-laptop)."""
     crc32 = zlib.crc32(payload) & 0xFFFFFFFF
     header = struct.pack(QR_HDR_FMT,
                          QR_MAGIC,
@@ -147,6 +164,23 @@ def encode_qr_frame(payload: bytes,
                          len(payload))
     ecc_payload = rs_encode(payload)
     return header + ecc_payload
+
+
+def encode_qr_frame_web(payload: bytes,
+                        frame_no: int,
+                        total_frames: int,
+                        session_id: bytes) -> str:
+    """
+    Return an ASCII string to embed in QR code for phone browser receivers.
+
+    Format: "MRCV:" + base64(header + rs_ecc_payload)
+
+    Using base64 ensures the QR code contains only ASCII text, so ALL phone
+    browsers (Chrome/Safari BarcodeDetector) decode it without any encoding
+    mangling of high bytes (0x80–0xFF).
+    """
+    raw = encode_qr_frame(payload, frame_no, total_frames, session_id)
+    return WEB_QR_PREFIX.decode() + base64.b64encode(raw).decode('ascii')
 
 
 def decode_qr_frame(raw: bytes) -> Optional[dict]:
@@ -346,7 +380,18 @@ class QRSender:
                  fps: int = QR_FPS_DEFAULT,
                  ack_cam: int = -1,
                  screen_w: int = 1920,
-                 screen_h: int = 1080):
+                 screen_h: int = 1080,
+                 session_id: Optional[bytes] = None,
+                 web_mode: bool = False):
+        """
+        session_id: shared 8-byte session token; auto-generated if None.
+                    Pass an explicit value when multiple transport modes transmit the
+                    same file simultaneously so all channels share one session ID.
+        web_mode  : when True, encode QR frames as base64 text ("MRCV:" prefix) so
+                    phone browsers (BarcodeDetector API) can decode them without any
+                    binary encoding issues.  Use with receiver.html on the phone.
+                    Slightly lower throughput (1664 vs 2304 bytes/frame).
+        """
         if cv2 is None:
             raise RuntimeError("opencv-python not installed")
         if qrcode is None:
@@ -358,37 +403,54 @@ class QRSender:
         self.ack_cam    = ack_cam
         self.screen_w   = screen_w
         self.screen_h   = screen_h
-        self.session_id = secrets.token_bytes(8)
+        self.session_id = session_id if session_id is not None else secrets.token_bytes(8)
+        self.web_mode   = web_mode
+
+        # Web mode uses smaller payload per frame (base64 overhead)
+        payload_per_frame = WEB_QR_PAYLOAD_PER_FRAME if web_mode else QR_PAYLOAD_PER_FRAME
 
         with open(filepath, 'rb') as f:
             self.data = f.read()
 
         self.sha256       = hashlib.sha256(self.data).hexdigest()
         self.total_bytes  = len(self.data)
-        self.total_frames = max(1, math.ceil(self.total_bytes / QR_PAYLOAD_PER_FRAME))
-        eff_bps           = QR_PAYLOAD_PER_FRAME * fps
+        self.payload_per_frame = payload_per_frame
+        self.total_frames = max(1, math.ceil(self.total_bytes / payload_per_frame))
+        eff_bps           = payload_per_frame * fps
 
+        mode_str = "WEB (base64, phone-compatible)" if web_mode else "BINARY (laptop-to-laptop)"
         print(f"\n[MARICHI QR SENDER — Option D]")
         print(f"  file        : {os.path.basename(filepath)}")
         print(f"  size        : {self.total_bytes:,} B  ({self.total_bytes/1024/1024:.2f} MB)")
         print(f"  SHA-256     : {self.sha256}")
         print(f"  session     : {self.session_id.hex()}")
         print(f"  frames      : {self.total_frames}")
-        print(f"  QR version  : {QR_VERSION}  ECC: L  payload: {QR_PAYLOAD_PER_FRAME:,} B/frame")
+        print(f"  QR version  : {QR_VERSION}  ECC: L  payload: {payload_per_frame:,} B/frame")
+        print(f"  encoding    : {mode_str}")
         print(f"  fps         : {fps}  hold: {self.hold_ms}ms")
         print(f"  ACK mode    : {'camera ' + str(ack_cam) if ack_cam >= 0 else 'DISABLED (timer)'}")
         print(f"  eff. rate   : ~{eff_bps/1024:.1f} KB/s")
         print(f"  ETA         : {self.total_bytes/eff_bps/60:.1f} min")
+        if web_mode:
+            print(f"\n  📱  Phone receiver: open receiver.html on your phone browser")
 
     def _build_frames(self) -> list[np.ndarray]:
         print(f"\n[BUILDING {self.total_frames} QR FRAMES]")
         frames = []
+        ppf = self.payload_per_frame
         for i in range(self.total_frames):
-            s   = i * QR_PAYLOAD_PER_FRAME
-            e   = min(s + QR_PAYLOAD_PER_FRAME, self.total_bytes)
-            raw = encode_qr_frame(self.data[s:e], i,
-                                  self.total_frames, self.session_id)
-            img = _make_qr_image(raw, i, self.total_frames,
+            s    = i * ppf
+            e    = min(s + ppf, self.total_bytes)
+            chunk = self.data[s:e]
+
+            if self.web_mode:
+                # ASCII text QR (base64) — phone browser compatible
+                qr_data = encode_qr_frame_web(chunk, i, self.total_frames, self.session_id)
+            else:
+                # Binary QR — laptop-to-laptop (faster, more capacity)
+                qr_data = encode_qr_frame(chunk, i, self.total_frames, self.session_id)
+
+            img = _make_qr_image(qr_data, i, self.total_frames,
                                  self.screen_w, self.screen_h)
             frames.append(img)
             if (i + 1) % 5 == 0 or (i + 1) == self.total_frames:

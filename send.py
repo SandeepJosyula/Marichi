@@ -2,11 +2,23 @@
 """
 MARICHI Sender  v0.3  — multi-transport
 
-Transmission modes:
-  --mode visual  (A) — Full-screen pixel frames via screen + camera  [default]
-  --mode audio   (C) — MFSK acoustic modem via speaker + microphone
-  --mode qr      (D) — QR-code animation via screen + camera (phone-compatible)
-  --mode all         — All three simultaneously (maximum reliability)
+Transmission modes (sender and receiver are now fully independent):
+  --mode visual          (A) — Full-screen pixel frames via screen + camera  [default]
+  --mode audio           (C) — MFSK acoustic modem via speaker + microphone
+  --mode qr              (D) — QR-code animation via screen + camera (phone-compatible)
+  --mode all                 — All three simultaneously with a SHARED session ID
+  --mode visual,audio        — Visual + audio simultaneously, shared session ID
+  --mode visual,qr           — Visual + QR simultaneously, shared session ID
+  --mode audio,qr            — Audio + QR simultaneously, shared session ID
+  (any comma-separated combination of: visual, audio, qr)
+
+Session independence:
+  When multiple modes are specified (e.g. --mode visual,audio), all transports
+  share ONE session_id.  The receiver can be on any channel and will correctly
+  assemble the file from whichever channel it sees first.
+
+  The receiver does NOT need to match the sender's mode.
+  Use  python receive.py --mode auto  to listen on visual + audio simultaneously.
 
 Usage:
     python send.py <file>                              # visual, timer mode
@@ -15,19 +27,23 @@ Usage:
     python send.py <file> --mode audio --baud 600     # faster audio
     python send.py <file> --mode qr                   # QR stream, timer
     python send.py <file> --mode qr   --fps 5 --ack-cam 0  # QR + ACK
-    python send.py <file> --mode all  --ack-cam 0     # all channels + ACK
+    python send.py <file> --mode visual,audio         # send on two channels, shared session
+    python send.py <file> --mode all  --ack-cam 0     # all three channels + ACK
 
 Choosing a mode:
-  visual  → Two laptops facing each other with cameras  (fastest: ~1-3 MB/s)
-  qr      → Phone or tablet as receiver                 (~6-22 KB/s)
-  audio   → No cameras, audio-only hardware             (~50-200 bytes/s)
-  all     → Redundancy / maximum reliability            (all channels)
+  visual      → Two laptops facing each other with cameras  (fastest: ~1-3 MB/s)
+  qr          → Phone or tablet as receiver                 (~6-22 KB/s)
+  audio       → No cameras, audio-only hardware             (~50-200 bytes/s)
+  visual,audio→ Redundancy; receiver picks whichever arrives first
+  all         → Maximum redundancy / reliability            (all channels)
 """
 
 import argparse
 import sys
 import os
+import secrets
 import threading
+from typing import Optional
 
 
 def _apply_visual_config(args):
@@ -51,67 +67,75 @@ def _apply_visual_config(args):
     cfg.ACK_CAM_INDEX     = args.ack_cam
 
 
-def _run_visual(args):
+def _run_visual(args, session_id: Optional[bytes] = None):
     _apply_visual_config(args)
     from marichi.sender import Sender
     s = Sender(args.file,
                block_size=args.block,
                hold_ms=args.hold,
-               ack_cam=args.ack_cam)
+               ack_cam=args.ack_cam,
+               session_id=session_id)
     s.run()
 
 
-def _run_audio(args):
+def _run_audio(args, session_id: Optional[bytes] = None):
     from marichi.transport.audio_modem import AudioSender, BAUD_RATE
     baud = args.baud if args.baud > 0 else BAUD_RATE
     s = AudioSender(args.file,
                     baud=baud,
-                    ack_mode=(args.ack_cam >= 0))
+                    ack_mode=(args.ack_cam >= 0),
+                    session_id=session_id)
     s.run()
 
 
-def _run_qr(args):
+def _run_qr(args, session_id: Optional[bytes] = None):
     from marichi.transport.qr_stream import QRSender
     fps = args.fps if args.fps > 0 else 3
+    web_mode = getattr(args, 'web_qr', False)
     s = QRSender(args.file,
                  fps=fps,
-                 ack_cam=args.ack_cam)
+                 ack_cam=args.ack_cam,
+                 session_id=session_id,
+                 web_mode=web_mode)
     s.run()
 
 
-def _run_all(args):
-    """Run visual + audio + QR simultaneously in separate threads."""
-    print("\n[MARICHI — ALL MODES]  Starting visual + audio + QR simultaneously.")
-    print("  Each mode transmits independently.")
-    print("  Receiver can use any one or all modes.\n")
+def _run_multi(args, modes: list):
+    """
+    Run two or more transport modes simultaneously with a single shared session_id.
+
+    All channels encode the same file with the same 8-byte session token.
+    The receiver can be on any one channel (or use --mode auto to listen on all)
+    and will correctly assemble the file from whichever channel it receives first.
+    """
+    shared_sid = secrets.token_bytes(8)
+
+    print(f"\n[MARICHI — MULTI-MODE]  channels: {', '.join(modes)}")
+    print(f"  shared session : {shared_sid.hex()}")
+    print(f"  The receiver does NOT need to use the same mode(s).")
+    print(f"  Use: python receive.py <output> --mode auto   (listens on visual + audio)")
+    print(f"  Or:  python receive.py <output> --mode <any single mode>\n")
+
+    runners = {
+        "visual": lambda: _run_visual(args, session_id=shared_sid),
+        "audio":  lambda: _run_audio(args,  session_id=shared_sid),
+        "qr":     lambda: _run_qr(args,     session_id=shared_sid),
+    }
 
     errors = {}
 
-    def visual_worker():
-        try:
-            _run_visual(args)
-        except Exception as e:
-            errors["visual"] = str(e)
-            print(f"\n[ALL] Visual mode error: {e}")
-
-    def audio_worker():
-        try:
-            _run_audio(args)
-        except Exception as e:
-            errors["audio"] = str(e)
-            print(f"\n[ALL] Audio mode error: {e}")
-
-    def qr_worker():
-        try:
-            _run_qr(args)
-        except Exception as e:
-            errors["qr"] = str(e)
-            print(f"\n[ALL] QR mode error: {e}")
+    def make_worker(mode_name):
+        def worker():
+            try:
+                runners[mode_name]()
+            except Exception as e:
+                errors[mode_name] = str(e)
+                print(f"\n[MULTI] {mode_name} channel error: {e}")
+        return worker
 
     threads = [
-        threading.Thread(target=visual_worker, name="visual", daemon=True),
-        threading.Thread(target=audio_worker,  name="audio",  daemon=True),
-        threading.Thread(target=qr_worker,     name="qr",     daemon=True),
+        threading.Thread(target=make_worker(m), name=m, daemon=True)
+        for m in modes
     ]
     for t in threads:
         t.start()
@@ -119,10 +143,47 @@ def _run_all(args):
         for t in threads:
             t.join()
     except KeyboardInterrupt:
-        print("\n[ALL] Aborted.")
+        print("\n[MULTI] Aborted.")
 
     if errors:
-        print(f"\n[ALL] Errors: {errors}")
+        print(f"\n[MULTI] Channel errors: {errors}")
+
+
+def _parse_modes(raw: str, parser: argparse.ArgumentParser) -> list:
+    """
+    Parse a comma-separated mode string into a validated list of mode names.
+
+    Accepts:
+      - Single modes: "visual", "audio", "qr"
+      - Aliases:      "a" → "visual", "c" → "audio", "d" → "qr"
+      - Shorthand:    "all" → ["visual", "audio", "qr"]
+      - Combos:       "visual,audio", "visual,qr", "audio,qr", "visual,audio,qr"
+    """
+    alias = {"a": "visual", "c": "audio", "d": "qr"}
+    valid = {"visual", "audio", "qr"}
+
+    parts = [p.strip() for p in raw.split(',')]
+
+    # Handle "all" anywhere in the list
+    if "all" in parts:
+        return ["visual", "audio", "qr"]
+
+    modes = []
+    for p in parts:
+        normalised = alias.get(p, p)
+        if normalised not in valid:
+            parser.error(
+                f"Unknown mode: {p!r}. "
+                f"Valid modes: visual (a), audio (c), qr (d), all, "
+                f"or comma-separated combinations (e.g. visual,audio)."
+            )
+        if normalised not in modes:   # deduplicate while preserving order
+            modes.append(normalised)
+
+    if not modes:
+        parser.error("No valid modes specified.")
+
+    return modes
 
 
 def main():
@@ -133,12 +194,17 @@ def main():
     )
     parser.add_argument("file", help="Path to file to transmit")
 
-    # Mode selection
-    parser.add_argument("--mode", "-m",
-                        choices=["visual", "audio", "qr", "all",
-                                 "a", "c", "d"],   # single-letter aliases
-                        default="visual",
-                        help="Transport mode: visual(A) audio(C) qr(D) all. Default: visual")
+    # Mode selection — accepts single mode OR comma-separated combo
+    parser.add_argument(
+        "--mode", "-m",
+        default="visual",
+        metavar="MODE[,MODE...]",
+        help=(
+            "Transport mode(s). Single: visual(a) | audio(c) | qr(d) | all.  "
+            "Combo: comma-separated, e.g. visual,audio  (shared session ID, "
+            "receiver can use any channel).  Default: visual"
+        ),
+    )
 
     # Visual mode options
     parser.add_argument("--block",   "-b", type=int, default=2,
@@ -156,24 +222,31 @@ def main():
     # QR mode options
     parser.add_argument("--fps",     type=int, default=0,
                         help="[qr] QR frames per second (1–10). Default: 3")
+    parser.add_argument("--web-qr",  action="store_true", default=False,
+                        dest="web_qr",
+                        help="[qr] Use phone-compatible base64 QR encoding for receiver.html. "
+                             "Slightly lower throughput (1664 vs 2304 bytes/frame) but works "
+                             "on ALL phone browsers without encoding issues.")
 
     args = parser.parse_args()
-
-    # Normalise single-letter aliases
-    alias = {"a": "visual", "c": "audio", "d": "qr"}
-    args.mode = alias.get(args.mode, args.mode)
 
     if not os.path.exists(args.file):
         print(f"ERROR: File not found: {args.file}")
         sys.exit(1)
 
-    dispatch = {
-        "visual": _run_visual,
-        "audio":  _run_audio,
-        "qr":     _run_qr,
-        "all":    _run_all,
-    }
-    dispatch[args.mode](args)
+    modes = _parse_modes(args.mode, parser)
+
+    if len(modes) == 1:
+        # Single-channel — original path, no shared session overhead
+        dispatch = {
+            "visual": lambda: _run_visual(args),
+            "audio":  lambda: _run_audio(args),
+            "qr":     lambda: _run_qr(args),
+        }
+        dispatch[modes[0]]()
+    else:
+        # Multi-channel — shared session_id across all senders
+        _run_multi(args, modes)
 
 
 if __name__ == "__main__":

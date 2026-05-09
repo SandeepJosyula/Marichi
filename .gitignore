@@ -10,3 +10,6 @@ build/
 *.log
 received_*
 *.tmp
+pip.conf
+*.marichi_visual
+*.marichi_audio
